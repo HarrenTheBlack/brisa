@@ -1,9 +1,12 @@
 import json
 import logging
-import re
 from pathlib import Path
 
 from app.models import AppConfig
+from app.sensor_ids import (
+    is_legacy_drive_id_candidate,
+    migrate_legacy_drive_sensor_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -11,83 +14,102 @@ CONFIG_PATH = Path("/data/config.json")
 
 DEFAULT_CONFIG = AppConfig()
 
-# Regex to match old-style drivetemp IDs that contain a block device letter:
-#   drivetemp-wwid-<WWID>/sdX — <model>
-# Captures: (prefix including wwid), (block device letter part), (model)
-_OLD_DRIVETEMP_RE = re.compile(
-    r'^(drivetemp-wwid-[^/]+)/sd[a-z]+ \u2014 (.+)$'
-)
+
+def _migrate_id(sensor_id: str, context: str) -> str:
+    migrated = migrate_legacy_drive_sensor_id(sensor_id)
+    if migrated != sensor_id:
+        logger.info("Migrated %s: %s -> %s", context, sensor_id, migrated)
+    elif is_legacy_drive_id_candidate(sensor_id):
+        logger.warning("Could not safely migrate %s: %s", context, sensor_id)
+    return migrated
 
 
-def _migrate_sensor_id(old_id: str) -> str:
-    """
-    If old_id matches the old drivetemp format with /sdX, return the new
-    format with model only.  Otherwise return the original ID unchanged.
-    """
-    m = _OLD_DRIVETEMP_RE.match(old_id)
-    if m:
-        return f"{m.group(1)}/{m.group(2)}"
-    return old_id
-
-
-def migrate_drivetemp_ids(config: AppConfig) -> tuple[AppConfig, int]:
-    """
-    Rewrite any old-style drivetemp sensor IDs (containing /sdX) to the
-    new stable format (WWID + model only).
-
-    Returns (possibly-modified config, number of IDs migrated).
-    """
+def _migrate_mapping(
+    values: dict[str, str], context: str
+) -> tuple[dict[str, str], int]:
+    migrated_entries: dict[str, list[tuple[str, str]]] = {}
     count = 0
 
-    # sensor_aliases: keys are sensor IDs
-    new_aliases: dict[str, str] = {}
-    for sid, alias in config.sensor_aliases.items():
-        new_sid = _migrate_sensor_id(sid)
-        if new_sid != sid:
+    for old_id, value in sorted(values.items()):
+        new_id = _migrate_id(old_id, f"{context} key")
+        if new_id != old_id:
             count += 1
-            logger.info("Migrated alias key: %s -> %s", sid, new_sid)
-        new_aliases[new_sid] = alias
-    config.sensor_aliases = new_aliases
+        migrated_entries.setdefault(new_id, []).append((old_id, value))
 
-    # virtual_sensors: source_sensor_ids
-    for vs in config.virtual_sensors:
-        new_sources = []
-        for sid in vs.source_sensor_ids:
-            new_sid = _migrate_sensor_id(sid)
-            if new_sid != sid:
-                count += 1
-                logger.info("Migrated virtual sensor '%s' source: %s -> %s", vs.id, sid, new_sid)
-            new_sources.append(new_sid)
-        vs.source_sensor_ids = new_sources
+    if count == 0:
+        return values, 0
 
-    # fan_configs: sensor_id
-    for fc in config.fan_configs:
-        new_sid = _migrate_sensor_id(fc.sensor_id)
-        if new_sid != fc.sensor_id:
+    result: dict[str, str] = {}
+    for new_id in sorted(migrated_entries):
+        entries = migrated_entries[new_id]
+        canonical = next((entry for entry in entries if entry[0] == new_id), None)
+        winner = canonical or entries[0]
+        conflicting = [entry for entry in entries if entry[1] != winner[1]]
+        if conflicting:
+            logger.warning(
+                "%s keys %s collapse to %s with conflicting values; preserving value from %s",
+                context,
+                [entry[0] for entry in entries],
+                new_id,
+                winner[0],
+            )
+        result[new_id] = winner[1]
+
+    return result, count
+
+
+def _migrate_list(values: list[str], context: str) -> tuple[list[str], int]:
+    result: list[str] = []
+    seen: set[str] = set()
+    count = 0
+
+    for old_id in values:
+        new_id = _migrate_id(old_id, context)
+        if new_id != old_id:
             count += 1
-            logger.info("Migrated fan config '%s' sensor: %s -> %s", fc.fan_id, fc.sensor_id, new_sid)
-            fc.sensor_id = new_sid
-
-    # dashboard_groups: item_ids
-    for grp in config.dashboard_groups:
-        new_items = []
-        for sid in grp.item_ids:
-            new_sid = _migrate_sensor_id(sid)
-            if new_sid != sid:
-                count += 1
-                logger.info("Migrated group '%s' item: %s -> %s", grp.name, sid, new_sid)
-            new_items.append(new_sid)
-        grp.item_ids = new_items
-
-    # card_colors: keys are sensor/fan IDs
-    new_colors: dict[str, str] = {}
-    for sid, color in config.card_colors.items():
-        new_sid = _migrate_sensor_id(sid)
-        if new_sid != sid:
+        if new_id in seen:
             count += 1
-            logger.info("Migrated card color key: %s -> %s", sid, new_sid)
-        new_colors[new_sid] = color
-    config.card_colors = new_colors
+            logger.warning("Removed duplicate %s after migration: %s", context, new_id)
+            continue
+        seen.add(new_id)
+        result.append(new_id)
+
+    return result, count
+
+
+def migrate_sensor_ids(config: AppConfig) -> tuple[AppConfig, int]:
+    """Syntactically migrate recognized drive IDs in every config reference."""
+    count = 0
+
+    config.sensor_aliases, migrated = _migrate_mapping(
+        config.sensor_aliases, "sensor alias"
+    )
+    count += migrated
+
+    for virtual in config.virtual_sensors:
+        virtual.source_sensor_ids, migrated = _migrate_list(
+            virtual.source_sensor_ids, f"virtual sensor '{virtual.id}' source"
+        )
+        count += migrated
+
+    for fan in config.fan_configs:
+        migrated_id = _migrate_id(
+            fan.sensor_id, f"fan config '{fan.fan_id}' sensor"
+        )
+        if migrated_id != fan.sensor_id:
+            count += 1
+            fan.sensor_id = migrated_id
+
+    for group in config.dashboard_groups:
+        group.item_ids, migrated = _migrate_list(
+            group.item_ids, f"dashboard group '{group.name}' item"
+        )
+        count += migrated
+
+    config.card_colors, migrated = _migrate_mapping(
+        config.card_colors, "card color"
+    )
+    count += migrated
 
     return config, count
 
@@ -121,15 +143,12 @@ def load_config() -> AppConfig:
             logger.warning("Fixing backend for '%s': %s -> hwmon-pwm", fc.fan_id, fc.backend)
             fc.backend = "hwmon-pwm"
             backend_fixed += 1
-    if backend_fixed:
+    config, migrated = migrate_sensor_ids(config)
+    if backend_fixed or migrated:
+        if migrated:
+            logger.warning("Migrated %d legacy sensor reference(s) in config", migrated)
         save_config(config)
-
-    # Migrate old drivetemp IDs if needed
-    config, migrated = migrate_drivetemp_ids(config)
-    if migrated > 0:
-        logger.warning("Migrated %d old-style drivetemp sensor ID(s) in config", migrated)
-        save_config(config)
-        logger.info("Config saved after drivetemp ID migration")
+        logger.info("Config saved after startup migration")
 
     return config
 
@@ -158,36 +177,34 @@ def save_config(config: AppConfig) -> None:
 VALID_CARD_COLORS = {"teal", "blue", "purple", "pink", "amber", "orange", "red", "slate"}
 
 
-def validate_config(config: AppConfig, known_sensor_ids: list[str], known_fan_ids: list[str]) -> list[str]:
+def validate_config(config: AppConfig) -> list[str]:
     """
-    Validate config against currently detected devices.
+    Validate structural relationships without requiring currently available hardware.
     Returns a list of error strings. Empty list means valid.
     """
     errors = []
     curve_names = {c.name for c in config.curves}
 
-    # Build the set of all valid sensor IDs: real + virtual
     virtual_sensor_ids = {vs.id for vs in config.virtual_sensors}
-    all_sensor_ids = set(known_sensor_ids) | virtual_sensor_ids
 
     # Validate virtual sensors
     for vs in config.virtual_sensors:
         if not vs.id:
             errors.append("Virtual sensor has empty ID")
+        elif not vs.id.startswith("virtual/"):
+            errors.append(
+                f"Virtual sensor '{vs.id}' must use an ID beginning with 'virtual/'"
+            )
         if vs.aggregation not in ("avg", "min", "max"):
             errors.append(
                 f"Virtual sensor '{vs.id}' has invalid aggregation '{vs.aggregation}' (must be avg, min, or max)"
             )
-        if len(vs.source_sensor_ids) < 2:
+        if len(set(vs.source_sensor_ids)) < 2:
             errors.append(
-                f"Virtual sensor '{vs.id}' must reference at least 2 source sensors"
+                f"Virtual sensor '{vs.id}' must reference at least 2 distinct source sensors"
             )
         for src_id in vs.source_sensor_ids:
-            if src_id not in known_sensor_ids:
-                errors.append(
-                    f"Virtual sensor '{vs.id}' references unknown sensor '{src_id}'"
-                )
-            if src_id in virtual_sensor_ids:
+            if src_id in virtual_sensor_ids or src_id.startswith("virtual/"):
                 errors.append(
                     f"Virtual sensor '{vs.id}' cannot reference another virtual sensor '{src_id}'"
                 )
@@ -200,7 +217,13 @@ def validate_config(config: AppConfig, known_sensor_ids: list[str], known_fan_id
         seen_vs_ids.add(vs.id)
 
     # Validate fan configs — sensor_id can now be a virtual sensor
+    seen_fan_ids = set()
     for fan_cfg in config.fan_configs:
+        if not fan_cfg.fan_id:
+            errors.append("Fan config has an empty fan ID")
+        elif fan_cfg.fan_id in seen_fan_ids:
+            errors.append(f"Duplicate fan config ID '{fan_cfg.fan_id}'")
+        seen_fan_ids.add(fan_cfg.fan_id)
         if fan_cfg.backend not in ("liquidctl", "hwmon-pwm"):
             errors.append(
                 f"Fan '{fan_cfg.fan_id}' has invalid backend '{fan_cfg.backend}' (must be liquidctl or hwmon-pwm)"
@@ -209,13 +232,16 @@ def validate_config(config: AppConfig, known_sensor_ids: list[str], known_fan_id
             errors.append(
                 f"Fan '{fan_cfg.fan_id}' references unknown curve '{fan_cfg.curve_name}'"
             )
-        if fan_cfg.sensor_id not in all_sensor_ids:
+        if not fan_cfg.sensor_id:
             errors.append(
-                f"Fan '{fan_cfg.fan_id}' references unknown sensor '{fan_cfg.sensor_id}'"
+                f"Fan '{fan_cfg.fan_id}' has an empty sensor reference"
             )
-        if fan_cfg.fan_id not in known_fan_ids:
+        elif (
+            fan_cfg.sensor_id.startswith("virtual/")
+            and fan_cfg.sensor_id not in virtual_sensor_ids
+        ):
             errors.append(
-                f"Fan config references unknown fan '{fan_cfg.fan_id}'"
+                f"Fan '{fan_cfg.fan_id}' references unknown virtual sensor '{fan_cfg.sensor_id}'"
             )
 
     for curve in config.curves:

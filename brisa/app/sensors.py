@@ -1,8 +1,10 @@
 import json
 import logging
 import os
-import re
 import subprocess
+from urllib.parse import quote
+
+from app.sensor_ids import make_drive_sensor_id
 
 logger = logging.getLogger(__name__)
 
@@ -21,27 +23,24 @@ def _read_file(path: str) -> str | None:
         return None
 
 
-def _safe_wwid(wwid: str) -> str:
-    """Strip whitespace and collapse internal spaces for use in an ID string."""
-    return re.sub(r'\s+', '_', wwid.strip())
+def _fallback_drive_sensor_id(backend: str, value: str) -> str:
+    """Build an explicitly unstable ID when no stable hardware ID is available."""
+    return f"drive-fallback-{backend}-{quote(value.strip(), safe='._:-')}"
 
 
-def _build_drivetemp_map() -> dict[str, tuple[str, str, str]]:
+def _build_drivetemp_map() -> dict[str, dict]:
     """
-    Build a mapping from resolved hwmon device path ->
-        (stable_key, human_label, model)
+    Build a mapping from resolved hwmon device path to drive metadata.
 
-    stable_key uses the drive WWID from /sys/class/block/<dev>/device/wwid,
-    which is a globally unique identifier stable across reboots and drive
-    reordering. Falls back to hwmon directory name if WWID is unavailable.
+    Identity prefers WWID, then serial. If neither is available, an explicitly
+    unstable hwmon fallback is retained so the sensor remains observable.
 
     human_label includes the block device letter for display:
         "sda — WDC WD120EFGX-68"
 
-    model is the drive model string without the block device letter,
-    used in the sensor ID for full reboot stability.
+    model is display metadata and is not part of the sensor ID.
     """
-    mapping: dict[str, tuple[str, str, str]] = {}
+    mapping: dict[str, dict] = {}
 
     try:
         block_devs = os.listdir(BLOCK_PATH)
@@ -71,19 +70,38 @@ def _build_drivetemp_map() -> dict[str, tuple[str, str, str]]:
         model = model_raw.strip() if model_raw else None
 
         wwid_raw = _read_file(os.path.join(block_real, "device", "wwid"))
-        wwid = _safe_wwid(wwid_raw) if wwid_raw else None
+        serial_raw = _read_file(os.path.join(block_real, "device", "serial"))
 
         label = f"{dev} \u2014 {model}" if model else dev
 
         for hwmon_entry in hwmon_entries:
             hwmon_real = os.path.realpath(os.path.join(hwmon_sub, hwmon_entry))
-            stable_key = f"wwid-{wwid}" if wwid else hwmon_entry
-            mapping[hwmon_real] = (stable_key, label, model or dev)
+            if wwid_raw:
+                sensor_id = make_drive_sensor_id("wwid", wwid_raw)
+            elif serial_raw:
+                sensor_id = make_drive_sensor_id("serial", serial_raw)
+            else:
+                sensor_id = _fallback_drive_sensor_id("drivetemp", hwmon_entry)
+                logger.warning(
+                    "Drive %s has no WWID or serial; using unstable sensor ID %s",
+                    dev,
+                    sensor_id,
+                )
+            mapping[hwmon_real] = {
+                "sensor_id": sensor_id,
+                "label": label,
+                "model": model or dev,
+                "block_device": dev,
+            }
 
     return mapping
 
 
-def _smartctl_read_drive(dev_path: str) -> dict | None:
+def _smartctl_read_drive(
+    dev_path: str,
+    sysfs_wwid: str | None = None,
+    sysfs_serial: str | None = None,
+) -> dict | None:
     """Run smartctl on a block device and return temperature info, or None."""
     global _smartctl_available
     if _smartctl_available is False:
@@ -118,18 +136,28 @@ def _smartctl_read_drive(dev_path: str) -> dict | None:
     serial = data.get("serial_number", "")
 
     wwn = data.get("wwn")
-    if wwn and "naa" in wwn and "id" in wwn:
+    if sysfs_wwid:
+        identity_kind = "wwid"
+        identity = sysfs_wwid
+    elif wwn and "naa" in wwn and "id" in wwn:
         oui = wwn.get("oui", 0)
-        stable_key = f"wwid-naa.{wwn['naa']:x}{oui:06x}{wwn['id']:09x}"
-    elif serial:
-        stable_key = f"serial-{_safe_wwid(serial)}"
+        identity_kind = "wwid"
+        identity = f"naa.{wwn['naa']:x}{oui:06x}{wwn['id']:09x}"
+    elif sysfs_serial or serial:
+        identity_kind = "serial"
+        identity = sysfs_serial or serial
     else:
-        stable_key = None
+        identity_kind = None
+        identity = None
 
     return {
         "temp": float(temp),
         "model": model,
-        "stable_key": stable_key,
+        "sensor_id": (
+            make_drive_sensor_id(identity_kind, identity)
+            if identity_kind and identity
+            else None
+        ),
     }
 
 
@@ -165,23 +193,66 @@ def _detect_smartctl_sensors() -> list[dict]:
             except OSError:
                 pass
 
-        info = _smartctl_read_drive(f"/dev/{dev}")
+        sysfs_wwid = _read_file(os.path.join(block_real, "device", "wwid"))
+        sysfs_serial = _read_file(os.path.join(block_real, "device", "serial"))
+        info = _smartctl_read_drive(
+            f"/dev/{dev}",
+            sysfs_wwid=sysfs_wwid,
+            sysfs_serial=sysfs_serial,
+        )
         if info is None:
             continue
 
-        stable_key = info["stable_key"] or dev
         model = info["model"] or dev
         label = f"{dev} — {model}" if info["model"] else dev
-        sensor_id = f"smartctl-{stable_key}/{model}"
+        sensor_id = info["sensor_id"]
+        if sensor_id is None:
+            sensor_id = _fallback_drive_sensor_id("smartctl", dev)
+            logger.warning(
+                "Drive %s has no WWID or serial; using unstable sensor ID %s",
+                dev,
+                sensor_id,
+            )
 
         sensors.append({
             "id": sensor_id,
             "driver": "smartctl",
             "label": label,
+            "model": info["model"] or None,
+            "block_device": dev,
             "current_temp": info["temp"],
         })
 
     return sensors
+
+
+def _deduplicate_drive_sensors(sensors: list[dict]) -> list[dict]:
+    """Deduplicate canonical drive IDs, preferring drivetemp over smartctl."""
+    result: list[dict] = []
+    positions: dict[str, int] = {}
+    preference = {"smartctl": 1, "drivetemp": 2}
+
+    for sensor in sensors:
+        sensor_id = sensor["id"]
+        if not sensor_id.startswith("drive-") or sensor_id not in positions:
+            if sensor_id.startswith("drive-"):
+                positions[sensor_id] = len(result)
+            result.append(sensor)
+            continue
+
+        index = positions[sensor_id]
+        existing = result[index]
+        if preference.get(sensor["driver"], 0) > preference.get(existing["driver"], 0):
+            result[index] = sensor
+        logger.warning(
+            "Duplicate drive sensor %s detected via %s and %s; using %s",
+            sensor_id,
+            existing["driver"],
+            sensor["driver"],
+            result[index]["driver"],
+        )
+
+    return result
 
 
 def detect_sensors() -> list[dict]:
@@ -196,11 +267,11 @@ def detect_sensors() -> list[dict]:
             "current_temp": 38.0
         }
 
-    For drivetemp sensors the id uses WWID + model only (no block device letter):
-        "drivetemp-wwid-naa.50014ee2c1c21634/WDC WD120EFGX-68"
+    Drive sensor IDs use only a stable WWID or serial when available:
+        "drive-wwid-naa.50014ee2c1c21634"
     The label still includes the block device letter for display:
         "sda — WDC WD120EFGX-68"
-    Falls back to hwmon directory name if WWID is unavailable.
+    Falls back to serial, then an explicitly unstable backend-local ID.
     """
     sensors = []
     drivetemp_map = _build_drivetemp_map()
@@ -245,26 +316,32 @@ def detect_sensors() -> list[dict]:
                 continue
 
             if driver == "drivetemp" and device_path in drivetemp_map:
-                stable_key, label, model = drivetemp_map[device_path]
-                # ID uses WWID + model only — no block device letter
-                sensor_id = f"drivetemp-{stable_key}/{model}"
+                drive_info = drivetemp_map[device_path]
+                sensor_id = drive_info["sensor_id"]
+                label = drive_info["label"]
             else:
                 label_raw = _read_file(os.path.join(device_path, f"temp{n}_label"))
                 label = label_raw if label_raw else f"temp{n}"
                 sensor_id = f"{driver}-{hwmon_dir}/{label}"
 
-            sensors.append({
+            sensor = {
                 "id": sensor_id,
                 "driver": driver,
                 "label": label,
                 "current_temp": current_temp,
-            })
+            }
+            if driver == "drivetemp" and device_path in drivetemp_map:
+                sensor["model"] = drive_info["model"]
+                sensor["block_device"] = drive_info["block_device"]
+            sensors.append(sensor)
 
     # Fallback: detect SAS/SCSI drives via smartctl (no hwmon coverage)
     smartctl_sensors = _detect_smartctl_sensors()
     if smartctl_sensors:
         logger.info("Detected %d additional sensor(s) via smartctl", len(smartctl_sensors))
         sensors.extend(smartctl_sensors)
+
+    sensors = _deduplicate_drive_sensors(sensors)
 
     logger.info("Detected %d temperature sensor(s)", len(sensors))
     return sensors

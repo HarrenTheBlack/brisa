@@ -22,7 +22,7 @@ Supports USB fan controllers via [liquidctl](https://github.com/liquidctl/liquid
 - **Manual override** — bypass curve control and hold a fixed speed per fan for testing
 - **Virtual sensors** — create computed sensors from groups of real sensors using avg, min, or max aggregation; usable in fan configs like any real sensor
 - **Sensor aliases** — assign human-readable names to sensors without changing how they're referenced internally
-- **Drive identification** — drivetemp sensors automatically show device name and model (e.g. `sda — WDC WD120EFGX-68`)
+- **Stable drive identification** — drivetemp and smartctl share backend-independent IDs based on WWID, with stable serial as a fallback; device name and model remain display metadata
 - **Dashboard groups** — organize sensors and fans into named groups on the dashboard with configurable order
 - **Card accent colors** — assign colors to individual sensor and fan cards from a curated palette
 - **Web UI** — dashboard, curve editor, fan config, history charts, settings
@@ -115,6 +115,14 @@ Everything is configured through the web UI:
 
 The config is stored as `/data/config.json` on your mounted volume.
 
+### Drive Identity and Replacement
+
+Physical drives use `drive-wwid-<normalized-wwid>` when a WWID is available, or `drive-serial-<normalized-serial>` otherwise. The detection backend (`drivetemp` or `smartctl`), `/dev/sdX` assignment, hwmon number, model, and display label are not part of a stable drive ID. Drives with neither WWID nor serial receive an explicitly unstable fallback ID and should not be assumed stable across reboots.
+
+Legacy smartctl and drivetemp WWID/serial IDs are migrated automatically in `config.json`, without requiring the drive to be online. Matching IDs in `history.db` are also migrated transactionally at startup so history remains associated with the same physical drive.
+
+Configured drives may remain visible as unavailable while offline. They do not prevent config edits, and virtual sensors continue using the sources that remain available. If a disk is physically replaced, its different WWID or serial creates a new sensor. Brisa never substitutes it automatically: explicitly remove the missing old drive and select the replacement in the virtual sensor or fan configuration.
+
 ---
 
 ## Virtual Sensors
@@ -123,8 +131,9 @@ Virtual sensors let you create a single computed temperature from a group of rea
 
 - **Aggregation modes:** average, minimum, maximum
 - **Resilient:** if some source sensors are unavailable, the virtual sensor computes from whatever is available; only skips if all sources are missing
+- **Editable while offline:** configured missing sources remain visible and selected until explicitly removed or replaced
 - **Usable everywhere:** virtual sensors appear in the fan config sensor selector and can be pinned to the dashboard just like real sensors
-- **No nesting:** virtual sensors can only reference real hwmon sensors, not other virtual sensors
+- **No nesting:** virtual sensors can only reference physical sensors, including hwmon and smartctl sources, not other virtual sensors
 
 Virtual sensors are created and managed on the **Sensors & Fans** page.
 
@@ -154,6 +163,8 @@ Each sensor or fan can be assigned an accent color from a curated palette: teal,
   config.json    ← curves, fan assignments, settings, aliases, virtual sensors, dashboard groups
   history.db     ← SQLite time-series database
 ```
+
+Recognized legacy drive IDs in `history.db` are re-keyed to canonical drive IDs during database initialization. Timestamps and temperatures are preserved; unrelated sensor and fan history is not modified.
 
 ---
 
@@ -240,7 +251,7 @@ Full OpenAPI docs at `http://<host>:9595/docs`.
 | GET | `/api/state` | Grouped dashboard data: fan groups, sensor groups, ungrouped items |
 | GET | `/api/history` | Time series (`?hours=24`) |
 | GET | `/api/config` | Full config |
-| POST | `/api/config` | Save new config (validated against detected devices) |
+| POST | `/api/config` | Save new config (structural validation; offline physical references are allowed) |
 | GET | `/api/devices` | Detected sensors, virtual sensors, and fans |
 | POST | `/api/apply` | Trigger immediate control loop iteration |
 | GET | `/api/metrics` | Prometheus metrics (includes virtual sensors) |

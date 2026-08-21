@@ -3,6 +3,11 @@ import sqlite3
 import time
 from pathlib import Path
 
+from app.sensor_ids import (
+    is_legacy_drive_id_candidate,
+    migrate_legacy_drive_sensor_id,
+)
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path("/data/history.db")
@@ -36,6 +41,46 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_fan_readings_ts ON fan_readings(ts);
         """)
     logger.info("Database initialized at %s", DB_PATH)
+    migrate_reading_sensor_ids()
+
+
+def migrate_reading_sensor_ids() -> int:
+    """Transactionally migrate recognized legacy IDs in temperature history."""
+    conn = _connect()
+    migrated_rows = 0
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        sensor_ids = conn.execute(
+            "SELECT DISTINCT sensor_id FROM readings"
+        ).fetchall()
+
+        for row in sensor_ids:
+            old_id = row["sensor_id"]
+            new_id = migrate_legacy_drive_sensor_id(old_id)
+            if new_id == old_id:
+                if is_legacy_drive_id_candidate(old_id):
+                    logger.warning(
+                        "Could not safely migrate history sensor ID: %s", old_id
+                    )
+                continue
+
+            cursor = conn.execute(
+                "UPDATE readings SET sensor_id = ? WHERE sensor_id = ?",
+                (new_id, old_id),
+            )
+            migrated_rows += cursor.rowcount
+            logger.info("Migrated history sensor ID: %s -> %s", old_id, new_id)
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    if migrated_rows:
+        logger.warning("Migrated %d temperature history row(s)", migrated_rows)
+    return migrated_rows
 
 
 def write_reading(ts: int, sensor_id: str, temp: float) -> None:

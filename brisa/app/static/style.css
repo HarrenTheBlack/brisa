@@ -338,6 +338,13 @@ input, select, textarea { font-family: var(--font-ui); }
   margin-bottom: 6px;
 }
 
+.form-help {
+  margin: -2px 0 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .form-input {
   width: 100%;
   background: var(--bg);
@@ -513,6 +520,9 @@ input, select, textarea { font-family: var(--font-ui); }
   transform: translateY(8px);
   transition: opacity 0.2s, transform 0.2s;
   pointer-events: none;
+  max-width: min(560px, calc(100vw - 48px));
+  line-height: 1.4;
+  white-space: pre-line;
 }
 
 #toast.show {

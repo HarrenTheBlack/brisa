@@ -37,6 +37,7 @@
     .modal {
       background: var(--bg-card); border: 1px solid var(--border);
       border-radius: var(--radius-lg); padding: 28px; width: 520px;
+      max-width: calc(100vw - 32px);
       transform: translateY(12px); transition: transform 0.2s;
       max-height: 80vh; overflow-y: auto;
     }
@@ -59,6 +60,10 @@
     .source-sensor-item .sensor-label { color: var(--text); }
     .source-sensor-item .sensor-id {
       font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);
+    }
+    .source-sensor-item.unavailable { background: rgba(245, 158, 11, 0.05); }
+    .sensor-label-row {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
     }
 
     /* Group cards */
@@ -207,7 +212,11 @@
         </select>
       </div>
       <div class="form-group">
-        <label class="form-label">Source Sensors (select 2 or more)</label>
+        <label class="form-label">Physical Source Sensors (select 2 or more)</label>
+        <div class="form-help">
+          Unavailable configured sources remain selected until you remove them.
+          Select replacement drives explicitly.
+        </div>
         <div class="source-sensor-list" id="vs-source-list"></div>
       </div>
       <div class="modal-actions">
@@ -407,7 +416,9 @@
 
       tbody.innerHTML = vsensors.map((vs, i) => {
         const sourceNames = vs.source_sensor_ids
-          .map(sid => sensorLookup[sid] || sid.split('/').pop())
+          .map(sid => escapeHtml(
+            sensorLookup[sid] || `Missing sensor — ${appConfig.sensor_aliases?.[sid] || sid}`
+          ))
           .join(', ');
         const aggLabel = vs.aggregation === 'avg' ? 'Average'
                        : vs.aggregation === 'max' ? 'Maximum' : 'Minimum';
@@ -688,20 +699,30 @@
 
     function populateSourceSensorList(selectedIds) {
       const list = document.getElementById('vs-source-list');
-      const sensors = devices.sensors || [];
-      if (!sensors.length) {
-        list.innerHTML = '<div style="color:var(--text-muted);padding:12px;font-size:13px">No sensors detected</div>';
+      const choices = buildPhysicalSensorChoices(
+        devices.sensors || [],
+        selectedIds,
+        appConfig
+      );
+      if (!choices.length) {
+        list.innerHTML = '<div style="color:var(--text-muted);padding:12px;font-size:13px">No physical sensors detected or configured</div>';
         return;
       }
-      list.innerHTML = sensors.map(s => {
-        const display = s.alias || s.label;
-        const checked = selectedIds.includes(s.id) ? 'checked' : '';
+      list.innerHTML = choices.map(sensor => {
+        const checked = selectedIds.includes(sensor.id) ? 'checked' : '';
+        const unavailableClass = sensor.unavailable ? ' unavailable' : '';
+        const badge = sensor.unavailable
+          ? '<span class="badge badge-warn">Unavailable</span>'
+          : '';
         return `
-          <label class="source-sensor-item">
-            <input type="checkbox" value="${s.id}" ${checked} />
+          <label class="source-sensor-item${unavailableClass}">
+            <input type="checkbox" value="${escapeHtml(sensor.id)}" ${checked} />
             <div>
-              <div class="sensor-label">${display}</div>
-              <div class="sensor-id">${s.id}</div>
+              <div class="sensor-label-row">
+                <span class="sensor-label">${sensor.unavailable ? 'Missing sensor — ' : ''}${escapeHtml(sensor.label)}</span>
+                ${badge}
+              </div>
+              <div class="sensor-id">${escapeHtml(sensor.id)}</div>
             </div>
           </label>
         `;
@@ -761,10 +782,12 @@
     async function deleteVirtualSensor(index) {
       const vs = appConfig.virtual_sensors[index];
 
-      const usedBy = appConfig.fan_configs.filter(fc => fc.sensor_id === vs.id);
-      if (usedBy.length) {
-        const fanNames = usedBy.map(fc => fc.fan_label || fc.fan_id).join(', ');
-        showToast(`Cannot delete — assigned to: ${fanNames}`, 'error');
+      const dependencyMessage = virtualSensorDependencyMessage(
+        vs,
+        appConfig.fan_configs || []
+      );
+      if (dependencyMessage) {
+        showToast(dependencyMessage, 'error');
         return;
       }
 
