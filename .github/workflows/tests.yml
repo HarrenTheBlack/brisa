@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            brisa/requirements.txt
+            brisa/requirements-test.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: python -m pip install -r brisa/requirements.txt -r brisa/requirements-test.txt
+
+      - name: Check Python syntax
+        run: python -m compileall -q brisa/app tests
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Check frontend JavaScript
+        run: |
+          node --check brisa/app/static/app.js
+          node --test tests/frontend_helpers.test.js

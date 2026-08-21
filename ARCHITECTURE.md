@@ -142,15 +142,15 @@ The controller loop runs as an asyncio background task inside the Uvicorn proces
   ],
   "sensor_aliases": {
     "nvme-hwmon1/Sensor 1": "NVMe Boot Drive",
-    "drivetemp-wwid-naa.5000000000000001/WDC WD120XXXX": "NAS Drive 1"
+    "drive-wwid-naa.5000000000000001": "NAS Drive 1"
   },
   "virtual_sensors": [
     {
       "id": "virtual/all-drives-max",
       "name": "All Drives Max",
       "source_sensor_ids": [
-        "drivetemp-wwid-naa.5000000000000001/WDC WD120XXXX",
-        "drivetemp-wwid-naa.5000000000000002/WDC WD120XXXX"
+        "drive-wwid-naa.5000000000000001",
+        "drive-wwid-naa.5000000000000002"
       ],
       "aggregation": "max"
     }
@@ -180,9 +180,9 @@ The controller loop runs as an asyncio background task inside the Uvicorn proces
 
 **`backend`** — determines how the fan is controlled. `"liquidctl"` for USB fan controllers (Aquacomputer Quadro, etc.), `"hwmon-pwm"` for motherboard PWM fan headers controlled via sysfs. The backend dictates which code path handles speed writes, RPM reads, and device lifecycle (initialization, shutdown).
 
-**`sensor_aliases`** — display-only map from sensor ID to a human-readable name. The raw sensor ID is used internally everywhere; aliases are applied at the UI/API layer only. Unused aliases (sensors that have disappeared) are silently ignored.
+**`sensor_aliases`** — display-only map from canonical sensor ID to a human-readable name. IDs are used internally everywhere; aliases are applied at the UI/API layer only. Aliases for offline sensors remain available to configuration editors.
 
-**`virtual_sensors`** — computed sensors that aggregate multiple real sensors. Each has a slug-like ID prefixed with `virtual/`, a display name, a list of source sensor IDs, and an aggregation mode (`avg`, `min`, `max`). Virtual sensors can be used as `sensor_id` in `fan_configs` just like real sensors. Nesting is not allowed — source sensors must be real hwmon sensors. If some source sensors are unavailable, the virtual sensor computes from whatever sources are present; it only fails (triggering safety floor) when all sources are missing.
+**`virtual_sensors`** — computed sensors that aggregate multiple physical sensors. Each has a slug-like ID prefixed with `virtual/`, a display name, a list of source sensor IDs, and an aggregation mode (`avg`, `min`, `max`). Virtual sensors can be used as `sensor_id` in `fan_configs` just like physical sensors. Nesting is not allowed. Physical sources may come from hwmon or smartctl. If some source sensors are unavailable, the virtual sensor computes from whatever sources are present; it only fails (triggering safety floor) when all sources are missing.
 
 **`dashboard_groups`** — ordered list of named groups for the dashboard. Each group has a `type` (`sensor` or `fan`) and a list of `item_ids` that belong to it. Groups are displayed in list order. Items not in any group appear in an "Ungrouped" section at the bottom. If no groups are defined, the dashboard falls back to showing all configured fans and their associated sensors (backward compatible).
 
@@ -210,6 +210,8 @@ CREATE INDEX idx_fan_readings_ts ON fan_readings(ts);
 
 Old rows are pruned on each loop iteration based on `history_days` setting.
 
+During database initialization, recognized legacy smartctl/drivetemp IDs in `readings.sensor_id` are transactionally migrated to canonical drive IDs. The migration is syntactic, idempotent, and does not require live hardware. It preserves every timestamp and temperature, does not touch `fan_readings`, and may leave multiple rows with the same canonical ID and timestamp because the schema has no uniqueness constraint.
+
 ---
 
 ## Virtual Sensors
@@ -223,8 +225,8 @@ Virtual sensors are resolved in `controller.py` via `resolve_virtual_sensors()`,
 - Missing individual sources are logged at `debug` level; all-missing is logged at `warning` level
 
 **Validation rules (enforced on `POST /api/config`):**
-- At least 2 source sensors required
-- All source sensors must be currently detected real hwmon sensors
+- At least 2 distinct source sensors required
+- Physical sources may be offline; availability is not structural validity
 - No referencing other virtual sensors (no nesting)
 - No duplicate virtual sensor IDs
 - Aggregation must be `avg`, `min`, or `max`
@@ -233,7 +235,7 @@ Virtual sensors appear in:
 - `/api/devices` response (under `virtual_sensors` key, with computed temps)
 - `/api/state` response (in sensor groups or ungrouped sensors, with computed temps)
 - `/api/metrics` output (with `sensor="virtual"` label)
-- Fan config sensor selector in the UI (under a `── Virtual Sensors ──` separator)
+- Fan config sensor selector in the UI (grouped separately from physical sensors)
 
 ---
 
@@ -241,20 +243,20 @@ Virtual sensors appear in:
 
 On startup (and via `GET /api/devices`), the service detects:
 
-**Temperature sensors** — scan `/sys/class/hwmon/hwmon*`:
+**Temperature sensors** — scan `/sys/class/hwmon/hwmon*`, then use smartctl for uncovered drives:
 - Read `name` file to identify driver
 - Read available `tempN_input` files
 - Read `tempN_label` if present (e.g. "Package id 0", "Core 0")
-- For `drivetemp` sensors: correlate the hwmon path back to the block device via `/sys/class/block`, read the model from `device/model` and the WWID from `device/wwid`, and produce:
-  - A stable sensor ID using the WWID and model only: `drivetemp-wwid-<WWID>/<model>`
-  - Example: `drivetemp-wwid-naa.5000000000000001/WDC WD120XXXX`
-  - The block device letter (`sda`, `sdb`, etc.) appears in the `label` field for display only — it is excluded from the ID because Linux can reassign device letters across reboots
-  - Falls back to hwmon directory name if WWID is unavailable
-- Return structured list: `{ id, driver, label, current_temp, alias? }`
+- For drives, correlate the source with a stable physical identifier and produce `drive-wwid-<normalized-wwid>`, or `drive-serial-<normalized-serial>` when WWID is unavailable
+- Both drivetemp and smartctl call the same identity builder; duplicate observations use one canonical ID and prefer drivetemp
+- Backend, model, `/dev/sdX`, hwmon number, and label remain metadata only: `{ id, driver, label, model?, block_device?, current_temp }`
+- If neither WWID nor serial is exposed, Brisa retains an explicitly unstable backend-local fallback ID and logs a warning; no stability is claimed for that sensor
 
-**Why WWID for drivetemp IDs?** hwmon directory numbers (`hwmon5`, `hwmon6`...) are assigned by the kernel at boot based on driver load order and can shift if drives are added, removed, or reordered. The WWID (`/sys/class/block/<dev>/device/wwid`) is a globally unique hardware identifier that is stable across reboots and drive reordering — making it safe to use as the persistent sensor ID in `config.json`. The block device letter (`/dev/sdX`) is also unstable across reboots and is therefore excluded from the sensor ID. Non-drivetemp sensors (coretemp, nvme, quadro, etc.) use hwmon-based IDs since their kernel assignment order is deterministic for PCI/onboard devices.
+**Why WWID for drive IDs?** hwmon numbers and block-device letters can change across boots, while model strings may differ between sysfs and smartctl. WWID is therefore preferred for persistent identity. Serial is used only when WWID is absent. A serial-identified drive that later exposes a WWID is not automatically treated as equivalent because Brisa cannot safely infer that relationship without persistent hardware evidence.
 
-**Config migration:** On startup, `load_config()` runs `migrate_drivetemp_ids()` which detects old-style drivetemp IDs containing a block device letter (e.g. `drivetemp-wwid-<WWID>/sda — <model>`) and rewrites them to the new format (`drivetemp-wwid-<WWID>/<model>`) across all config sections: `sensor_aliases`, `virtual_sensors`, `fan_configs`, `dashboard_groups`, and `card_colors`. If any IDs were migrated, the config is saved back to disk automatically. Each migrated ID is logged individually at INFO level.
+**Config migration:** On startup, `load_config()` syntactically recognizes legacy `smartctl-wwid-*`, `drivetemp-wwid-*`, old `/sdX — model` drivetemp forms, and unambiguous serial forms. It rewrites aliases, virtual sources, fan sensor references, dashboard items, and card-color keys without consulting live hardware. Ordered lists are deduplicated after migration. Canonical mapping keys take precedence over legacy keys; otherwise conflicting legacy keys use a deterministic lexical winner and emit a warning. The config is atomically rewritten only when something changed. Ambiguous IDs remain unchanged with a warning.
+
+**Drive replacement:** A different WWID or serial is a different physical sensor. Brisa never substitutes a newly detected drive for an offline configured drive based on model, bay, or device letter. The UI keeps missing references visible so the user can explicitly remove the old source and select the replacement.
 
 **Fans (liquidctl backend)** — query liquidctl:
 - Run `liquidctl list --json` to find connected devices
@@ -285,7 +287,7 @@ No hardcoded sensor or fan names anywhere in the codebase.
 | GET | `/api/state` | Grouped dashboard data: sensor_groups, fan_groups, ungrouped_sensors, ungrouped_fans — each item includes color |
 | GET | `/api/history` | Time series; params: `hours` (default 24) |
 | GET | `/api/config` | Full config (curves + fan assignments + settings + aliases + virtual sensors + groups + colors) |
-| POST | `/api/config` | Save new config; validated against currently detected devices before write |
+| POST | `/api/config` | Save new config; structurally validated before write, with offline physical references allowed |
 | GET | `/api/devices` | All detected sensors (with aliases), virtual sensors (with computed temps), and fans |
 | POST | `/api/apply` | Trigger immediate controller loop iteration; does not affect loop timer |
 | GET | `/api/metrics` | Prometheus text format (includes virtual sensors with `sensor="virtual"`) |
@@ -333,19 +335,18 @@ No hardcoded sensor or fan names anywhere in the codebase.
 
 ### Config validation
 
-`POST /api/config` validates against currently detected devices before writing:
+`POST /api/config` validates structural relationships before writing. Current hardware availability is deliberately not a validity requirement:
 - Every `fan_config.curve_name` must exist in `curves`
-- Every `fan_config.sensor_id` must be a currently detected sensor or a defined virtual sensor
-- Every `fan_config.fan_id` must be in the currently detected fan list (from either backend)
+- A virtual `fan_config.sensor_id` must name a defined virtual sensor; physical sensor references may be offline
 - Every `fan_config.backend` must be `"liquidctl"` or `"hwmon-pwm"`
 - Every curve must have at least 2 points in ascending temperature order
-- Virtual sensors must have at least 2 source sensors, all real and currently detected
+- Virtual sensors must have at least 2 distinct physical source references; those sources may be offline
 - Virtual sensors cannot reference other virtual sensors
 - No duplicate virtual sensor IDs or dashboard group IDs
 - Card colors must be from the valid set: teal, blue, purple, pink, amber, orange, red, slate
 - Dashboard group types must be `sensor` or `fan`
 
-Hard reject on any violation. The validation cache is the live device scan at request time — sensor detection is required (503 if it fails), but liquidctl and hwmon-pwm fan detection are independent and non-blocking (if either fails, the other still contributes its fans). All validation errors are logged at WARNING level (with the full error list and known sensor/fan IDs) before the 422 response is returned.
+Structural violations are rejected with HTTP 422. Offline physical sensors and fans remain saveable so users can repair configurations while hardware is disconnected. At runtime, missing physical control sensors and virtual sensors with no available members continue to invoke the existing safety floor.
 
 ### /api/metrics format (Prometheus)
 
@@ -482,12 +483,13 @@ brisa/
 │   └── app/
 │       ├── main.py              ← FastAPI app, lifespan, global config/loop state
 │       ├── models.py            ← Pydantic models (AppConfig, FanConfig with backend field, Curve, VirtualSensor, DashboardGroup, etc.)
-│       ├── config.py            ← load/save/validate config.json, drivetemp ID migration (incl. virtual sensor + group + color validation)
+│       ├── config.py            ← load/save/structurally validate config.json, migrate persisted sensor references
+│       ├── sensor_ids.py        ← canonical drive identity builder and shared legacy-ID parser
 │       ├── controller.py        ← loop logic, backend routing, interpolation, virtual sensor resolution, _last_applied cache
 │       ├── sensors.py           ← /sys/class/hwmon temperature reader + drivetemp enrichment (renamed from hwmon.py)
 │       ├── hwmon_pwm.py         ← sysfs PWM fan detection, control, takeover/release lifecycle
 │       ├── liquidctl_wrapper.py ← subprocess wrapper for liquidctl
-│       ├── database.py          ← SQLite init, read/write, prune
+│       ├── database.py          ← SQLite init, history ID migration, read/write, prune
 │       ├── api/
 │       │   └── routes.py        ← all API endpoints (grouped state, virtual sensor dicts, card colors)
 │       └── static/              ← vanilla JS + HTML pages

@@ -39,7 +39,7 @@ function showToast(msg, type = 'ok') {
   el.textContent = msg;
   el.className = `show toast-${type}`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.className = ''; }, 3000);
+  toastTimer = setTimeout(() => { el.className = ''; }, type === 'error' ? 8000 : 3000);
 }
 
 /* ── API helpers ────────────────────────────────────────── */
@@ -86,6 +86,80 @@ function relativeTime(ts) {
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   return `${Math.floor(diff / 3600)}h ago`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+/* ── Sensor reference helpers ───────────────────────────── */
+function sensorReferenceKind(sensorId, config) {
+  const configuredVirtual = (config.virtual_sensors || [])
+    .some(vs => vs.id === sensorId);
+  return configuredVirtual || sensorId.startsWith('virtual/')
+    ? 'virtual'
+    : 'physical';
+}
+
+function configuredPhysicalSensorIds(config) {
+  const ids = [];
+  const seen = new Set();
+
+  function add(sensorId) {
+    if (!sensorId || seen.has(sensorId) ||
+        sensorReferenceKind(sensorId, config) !== 'physical') return;
+    seen.add(sensorId);
+    ids.push(sensorId);
+  }
+
+  (config.virtual_sensors || []).forEach(vs =>
+    (vs.source_sensor_ids || []).forEach(add)
+  );
+  (config.fan_configs || []).forEach(fc => add(fc.sensor_id));
+  return ids;
+}
+
+function buildPhysicalSensorChoices(detectedSensors, retainedIds, config) {
+  const choices = [];
+  const seen = new Set();
+  const aliases = config.sensor_aliases || {};
+
+  (detectedSensors || []).forEach(sensor => {
+    seen.add(sensor.id);
+    choices.push({
+      id: sensor.id,
+      label: sensor.alias || aliases[sensor.id] || sensor.label,
+      unavailable: false,
+    });
+  });
+
+  (retainedIds || []).forEach(sensorId => {
+    if (seen.has(sensorId) || sensorReferenceKind(sensorId, config) !== 'physical') return;
+    seen.add(sensorId);
+    choices.push({
+      id: sensorId,
+      label: aliases[sensorId] || sensorId,
+      unavailable: true,
+    });
+  });
+
+  return choices;
+}
+
+function virtualSensorDependencyMessage(virtualSensor, fanConfigs) {
+  const usedBy = (fanConfigs || [])
+    .filter(fc => fc.sensor_id === virtualSensor.id);
+  if (!usedBy.length) return null;
+
+  const fanNames = usedBy.map(fc => `- ${fc.fan_label || fc.fan_id}`);
+  return `Cannot delete "${virtualSensor.name}".\n` +
+    `It is currently used by:\n${fanNames.join('\n')}\n\n` +
+    'Reassign those fan configurations first in Fan Config.';
 }
 
 /* ── Sidebar HTML (injected into each page) ─────────────── */
@@ -168,4 +242,16 @@ function initPage() {
   setActiveNav();
 }
 
-document.addEventListener('DOMContentLoaded', initPage);
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    sensorReferenceKind,
+    configuredPhysicalSensorIds,
+    buildPhysicalSensorChoices,
+    virtualSensorDependencyMessage,
+    escapeHtml,
+  };
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', initPage);
+}

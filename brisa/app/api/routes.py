@@ -163,37 +163,17 @@ async def get_config():
 
 @router.post("/config")
 async def post_config(new_config: AppConfig):
-    from app.config import save_config, validate_config
+    from app.config import migrate_sensor_ids, save_config, validate_config
 
-    try:
-        sensors = detect_sensors()
-    except Exception as e:
-        logger.error("POST /config: sensor detection failed: %s", e)
-        raise HTTPException(status_code=503, detail=f"Could not detect sensors for validation: {e}")
+    new_config, migrated = migrate_sensor_ids(new_config)
+    if migrated:
+        logger.info("POST /config: migrated %d legacy sensor reference(s)", migrated)
 
-    known_sensor_ids = [s["id"] for s in sensors]
-
-    known_fan_ids = []
-    try:
-        fans = get_fan_status()
-        known_fan_ids.extend(f["id"] for f in fans)
-    except Exception as e:
-        logger.warning("POST /config: liquidctl detection failed: %s", e)
-
-    # Include hwmon-pwm fans in known fan IDs
-    try:
-        pwm_fans = hwmon_pwm.detect_pwm_fans()
-        known_fan_ids.extend(f["id"] for f in pwm_fans)
-    except Exception as e:
-        logger.warning("POST /config: hwmon-pwm detection failed: %s", e)
-
-    errors = validate_config(new_config, known_sensor_ids, known_fan_ids)
+    errors = validate_config(new_config)
     if errors:
         logger.warning("POST /config: validation failed with %d error(s):", len(errors))
         for err in errors:
             logger.warning("  - %s", err)
-        logger.warning("POST /config: known sensor IDs: %s", known_sensor_ids)
-        logger.warning("POST /config: known fan IDs: %s", known_fan_ids)
         raise HTTPException(status_code=422, detail=errors)
 
     save_config(new_config)

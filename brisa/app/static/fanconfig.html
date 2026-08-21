@@ -16,6 +16,7 @@
     .modal {
       background: var(--bg-card); border: 1px solid var(--border);
       border-radius: var(--radius-lg); padding: 28px; width: 440px;
+      max-width: calc(100vw - 32px); max-height: 80vh; overflow-y: auto;
       transform: translateY(12px); transition: transform 0.2s;
     }
     .modal-overlay.open .modal { transform: translateY(0); }
@@ -112,6 +113,9 @@
       </div>
       <div class="form-group">
         <label class="form-label">Temperature sensor</label>
+        <div class="form-help">
+          Unavailable assignments are retained. Select a replacement explicitly.
+        </div>
         <select class="form-select" id="modal-sensor-id"></select>
       </div>
       <div class="form-group">
@@ -162,15 +166,17 @@
     }
 
     function sensorDisplayName(sensorId) {
-      // Check aliases first
-      if (config.sensor_aliases && config.sensor_aliases[sensorId]) {
-        return config.sensor_aliases[sensorId];
-      }
-      // Check virtual sensors
       const vs = (config.virtual_sensors || []).find(v => v.id === sensorId);
       if (vs) return vs.name + ' [virtual]';
-      // Fallback to last segment
-      return sensorId.split('/').pop();
+
+      const detected = (devices.sensors || []).find(sensor => sensor.id === sensorId);
+      const display = config.sensor_aliases?.[sensorId]
+        || detected?.alias
+        || detected?.label
+        || sensorId;
+      if (detected) return display;
+
+      return `${display} [unavailable ${sensorReferenceKind(sensorId, config)}]`;
     }
 
     function render() {
@@ -185,9 +191,9 @@
         const isOverride = fc.override_percent != null;
         return `
           <tr>
-            <td><span class="mono" style="font-size:12px">${fc.fan_id}</span></td>
-            <td>${fc.fan_label || '—'}</td>
-            <td><span class="mono" style="font-size:11px;color:var(--text-dim)">${sensorDisplayName(fc.sensor_id)}</span></td>
+            <td><span class="mono" style="font-size:12px">${escapeHtml(fc.fan_id)}</span></td>
+            <td>${escapeHtml(fc.fan_label || '—')}</td>
+            <td><span class="mono" style="font-size:11px;color:var(--text-dim)">${escapeHtml(sensorDisplayName(fc.sensor_id))}</span></td>
             <td>${isOverride
               ? '<span class="badge badge-dim" style="text-decoration:line-through">' + fc.curve_name + '</span>'
               : '<span class="badge badge-green">' + fc.curve_name + '</span>'
@@ -218,28 +224,49 @@
       const sensorSel = document.getElementById('modal-sensor-id');
       const curveSel = document.getElementById('modal-curve-name');
 
-      fanSel.innerHTML = (devices.fans || []).map(f =>
-        `<option value="${f.id}" ${existing?.fan_id === f.id ? 'selected' : ''}>${f.label}</option>`
-      ).join('');
+      const fanOptions = (devices.fans || []).map(f =>
+        `<option value="${escapeHtml(f.id)}" ${existing?.fan_id === f.id ? 'selected' : ''}>${escapeHtml(f.label)}</option>`
+      );
+      if (existing?.fan_id && !(devices.fans || []).some(f => f.id === existing.fan_id)) {
+        fanOptions.unshift(
+          `<option value="${escapeHtml(existing.fan_id)}" selected>${escapeHtml(existing.fan_label || existing.fan_id)} — unavailable</option>`
+        );
+      }
+      fanSel.innerHTML = fanOptions.join('');
 
-      // Real sensors
-      let sensorOptions = (devices.sensors || []).map(s => {
-          const display = s.alias ? s.alias + ' (' + s.id + ')' : s.label;
-          return `<option value="${s.id}" ${existing?.sensor_id === s.id ? 'selected' : ''}>${display}</option>`;
+      const physicalChoices = buildPhysicalSensorChoices(
+        devices.sensors || [],
+        configuredPhysicalSensorIds(config),
+        config
+      );
+      const physicalOptions = physicalChoices.map(sensor => {
+        const display = sensor.label === sensor.id
+          ? sensor.id
+          : `${sensor.label} (${sensor.id})`;
+        const suffix = sensor.unavailable ? ' — unavailable physical' : '';
+        return `<option value="${escapeHtml(sensor.id)}" ${existing?.sensor_id === sensor.id ? 'selected' : ''}>${escapeHtml(display)}${suffix}</option>`;
+      });
+
+      const virtualOptions = (config.virtual_sensors || []).map(vs => {
+          const display = vs.name + ' [virtual]';
+          return `<option value="${escapeHtml(vs.id)}" ${existing?.sensor_id === vs.id ? 'selected' : ''}>${escapeHtml(display)}</option>`;
         });
 
-      // Virtual sensors
-      const vsOptions = (devices.virtual_sensors || []).map(vs => {
-          const display = vs.label + ' [virtual]';
-          return `<option value="${vs.id}" ${existing?.sensor_id === vs.id ? 'selected' : ''}>${display}</option>`;
-        });
-
-      if (vsOptions.length) {
-        sensorOptions.push('<option disabled>── Virtual Sensors ──</option>');
-        sensorOptions = sensorOptions.concat(vsOptions);
+      if (existing?.sensor_id && sensorReferenceKind(existing.sensor_id, config) === 'virtual' &&
+          !(config.virtual_sensors || []).some(vs => vs.id === existing.sensor_id)) {
+        virtualOptions.push(
+          `<option value="${escapeHtml(existing.sensor_id)}" selected>${escapeHtml(existing.sensor_id)} — unavailable virtual; reassign required</option>`
+        );
       }
 
-      sensorSel.innerHTML = sensorOptions.join('');
+      const sensorGroups = [];
+      if (physicalOptions.length) {
+        sensorGroups.push(`<optgroup label="Physical sensors">${physicalOptions.join('')}</optgroup>`);
+      }
+      if (virtualOptions.length) {
+        sensorGroups.push(`<optgroup label="Virtual sensors">${virtualOptions.join('')}</optgroup>`);
+      }
+      sensorSel.innerHTML = sensorGroups.join('') || '<option value="">— No sensors available —</option>';
 
       curveSel.innerHTML = (config.curves || []).map(c =>
         `<option value="${c.name}" ${existing?.curve_name === c.name ? 'selected' : ''}>${c.name}</option>`
@@ -279,9 +306,12 @@
 
     async function saveEntry() {
       const idx = parseInt(document.getElementById('edit-index').value);
+      const existing = idx >= 0 ? config.fan_configs[idx] : null;
       const fan_id = document.getElementById('modal-fan-id').value;
-      const fan_label = document.getElementById('modal-fan-label').value.trim()
-        || document.getElementById('modal-fan-id').selectedOptions[0]?.text.split(' (')[0] || fan_id;
+      const enteredLabel = document.getElementById('modal-fan-label').value.trim();
+      const fan_label = enteredLabel || (existing
+        ? existing.fan_label
+        : document.getElementById('modal-fan-id').selectedOptions[0]?.text.split(' (')[0] || fan_id);
       const sensor_id = document.getElementById('modal-sensor-id').value;
       const curve_name = document.getElementById('modal-curve-name').value;
       const overrideEnabled = document.getElementById('modal-override-enabled').checked;
@@ -296,7 +326,9 @@
         showToast('Override percent must be between 0 and 100', 'error'); return;
       }
 
-      const backend = (devices.fans || []).find(f => f.id === fan_id)?.backend || 'liquidctl';
+      const backend = (devices.fans || []).find(f => f.id === fan_id)?.backend
+        || existing?.backend
+        || 'liquidctl';
       const entry = { fan_id, fan_label, sensor_id, curve_name, override_percent, backend };
 
       if (idx === -1) {
