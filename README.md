@@ -2,7 +2,7 @@
   <img src="brisa/app/static/logo_text.png" width="250">
 </p>
 
-*v1.0.2*
+*v1.1.0*
 
 Brisa is a self-contained Docker service for controlling fans on TrueNAS SCALE (and any other Linux host where you can run Docker but can't install packages directly).
 
@@ -73,10 +73,10 @@ Either backend works independently — you don't need a USB controller to use hw
 Brisa publishes a Docker image to GitHub Container Registry:
 
 ```text
-ghcr.io/harrentheblack/brisa:AUTH_RELEASE_TAG
+ghcr.io/harrentheblack/brisa:1.1.0
 ```
 
-Authentication is unreleased on the current `v1.0.2` production tag. Do not use `v1.0.2` with the authentication variables below; they take effect only in a later image containing this feature. This branch deliberately continues to report `1.0.2` until the release version is reviewed.
+Brisa `v1.1.0` includes the reviewed authentication and security hardening. Use the immutable `ghcr.io/harrentheblack/brisa:1.1.0` image tag for production deployments rather than `latest`. Authentication remains optional for trusted LAN/backwards-compatible deployments, but public exposure requires authentication and network controls. `v1.0.2` remains the stable-drive-ID release.
 
 Generate an Argon2id password hash. `getpass` reads the password from the terminal, and only the encoded hash is written to disk; the plaintext password is never placed in Compose, shell history, or the secret file.
 
@@ -99,13 +99,12 @@ PY
 rm -rf .brisa-hash-venv
 ```
 
-Create a `docker-compose.yml` file. This example is for direct HTTP access on a trusted LAN, so secure cookies are explicitly disabled; do not use that setting for public or HTTPS deployments.
+Create a `docker-compose.yml` file. This example is for final HTTPS deployment and keeps secure cookies enabled. Set `BRISA_SECURE_COOKIES=false` only for temporary direct HTTP testing on a trusted LAN.
 
 ```yaml
 services:
   brisa:
-    # v1.0.2 predates authentication. Set this only to a reviewed later release.
-    image: ghcr.io/harrentheblack/brisa:${BRISA_IMAGE_TAG:?set an authentication-capable release tag}
+    image: ghcr.io/harrentheblack/brisa:1.1.0
     container_name: brisa
     restart: unless-stopped
     privileged: true
@@ -116,22 +115,25 @@ services:
       BRISA_AUTH_ENABLED: "true"
       BRISA_AUTH_USERNAME: "admin"
       BRISA_PASSWORD_HASH_FILE: /run/secrets/brisa/password_hash
-      # LAN HTTP only. Use "true" whenever the browser reaches Brisa over HTTPS.
-      BRISA_SECURE_COOKIES: "false"
+      # Use "false" only for temporary direct HTTP testing on a trusted LAN.
+      BRISA_SECURE_COOKIES: "true"
       BRISA_SESSION_TTL_SECONDS: "28800"
+      # Keep false until the actual NPM peer is measured.
       BRISA_TRUST_PROXY: "false"
+      # Required only when BRISA_TRUST_PROXY=true; use the measured proxy CIDR.
+      BRISA_TRUSTED_PROXY_CIDRS: ""
     volumes:
       - /some/data/path:/data
       - /some/secrets/path:/run/secrets/brisa:ro
 ```
 
-Replace `/some/data/path` and `/some/secrets/path` with host paths for Brisa data and secrets. Place the generated file at `/some/secrets/path/password_hash`; the directory is mounted read-only and the file contains an Argon2id hash, never the password. Once an authentication-capable release exists, set `BRISA_IMAGE_TAG` to that reviewed tag and start Brisa:
+Replace `/some/data/path` and `/some/secrets/path` with host paths for Brisa data and secrets. Place the generated file at `/some/secrets/path/password_hash`; the directory is mounted read-only and the file contains an Argon2id hash, never the password. This example is for final HTTPS deployment: leave secure cookies enabled. For temporary direct HTTP testing on a trusted LAN only, set `BRISA_SECURE_COOKIES` to `"false"`. Keep `BRISA_TRUST_PROXY=false` until the actual NPM peer is measured. Start the reviewed release with:
 
 ```bash
-BRISA_IMAGE_TAG=AUTH_RELEASE_TAG docker compose up -d
+docker compose up -d
 ```
 
-The login page is available at `http://<host>:9595` with username `admin` and the password entered during hash generation.
+The login page is available at `https://<host>` through the configured HTTPS proxy with username `admin` and the password entered during hash generation.
 
 On first run, a default `config.json` is created at your `/data` volume path. No fans will be controlled until you configure curves and fan assignments through the UI.
 
@@ -229,13 +231,13 @@ sudo podman run --privileged \
   -e BRISA_AUTH_ENABLED=true \
   -e BRISA_AUTH_USERNAME=admin \
   -e BRISA_PASSWORD_HASH_FILE=/run/secrets/brisa/password_hash \
-  -e BRISA_SECURE_COOKIES=false \
+  -e BRISA_SECURE_COOKIES=true \
   -e BRISA_SESSION_TTL_SECONDS=28800 \
   -e BRISA_TRUST_PROXY=false \
-  ghcr.io/harrentheblack/brisa:AUTH_RELEASE_TAG
+  ghcr.io/harrentheblack/brisa:1.1.0
 ```
 
-This Podman command is also limited to direct trusted-LAN HTTP. Put the generated `password_hash` under `/path/to/secrets`; it contains only the encoded hash and is mounted read-only.
+This Podman command is for HTTPS deployment. For temporary direct HTTP testing on a trusted LAN only, set `BRISA_SECURE_COOKIES=false`. Put the generated `password_hash` under `/path/to/secrets`; it contains only the encoded hash and is mounted read-only.
 
 If only using liquidctl (USB) fans, rootless Podman may work, but the invoking user still needs host USB-device permissions. Device ACLs, supplementary groups, and SELinux policy remain host-specific.
 
@@ -294,7 +296,7 @@ Identify the shared network and either assign NPM a stable address and trust tha
 
 ### Release-time version checklist
 
-When a reviewed authentication release is approved, update the release version deliberately. Do not blindly replace historical `1.0.x` references or change the current development value before release review.
+For future releases, update the release version deliberately. Do not blindly replace historical `1.0.x` references.
 
 - [ ] Update `brisa/app/version.py`.
 - [ ] Verify FastAPI's application version and `/api/auth/me` use the canonical value.
@@ -303,7 +305,7 @@ When a reviewed authentication release is approved, update the release version d
 - [ ] Update Docker/GHCR image examples, install instructions containing image tags, and version badges if present.
 - [ ] Review Docker labels, image metadata, and any TrueNAS-specific metadata if those version-bearing fields exist.
 - [ ] Update tests asserting the application version.
-- [ ] Replace `AUTH_RELEASE_TAG` placeholders only in the approved release-preparation change.
+- [ ] Confirm immutable release tags are used in deployment documentation and examples.
 
 ### Protected endpoints
 

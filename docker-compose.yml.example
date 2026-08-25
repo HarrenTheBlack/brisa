@@ -1,7 +1,6 @@
 services:
   brisa:
-    # v1.0.2 predates authentication. Set this only to a reviewed later release.
-    image: ghcr.io/harrentheblack/brisa:${BRISA_IMAGE_TAG:?set an authentication-capable release tag}
+    image: ghcr.io/harrentheblack/brisa:1.1.0
     container_name: brisa
     restart: unless-stopped
     privileged: true
@@ -12,10 +11,13 @@ services:
       BRISA_AUTH_ENABLED: "true"
       BRISA_AUTH_USERNAME: "admin"
       BRISA_PASSWORD_HASH_FILE: /run/secrets/brisa/password_hash
-      # LAN HTTP only. Use "true" whenever the browser reaches Brisa over HTTPS.
-      BRISA_SECURE_COOKIES: "false"
+      # Use "false" only for temporary direct HTTP testing on a trusted LAN.
+      BRISA_SECURE_COOKIES: "true"
       BRISA_SESSION_TTL_SECONDS: "28800"
+      # Keep false until the actual NPM peer is measured.
       BRISA_TRUST_PROXY: "false"
+      # Required only when BRISA_TRUST_PROXY=true; use the measured proxy CIDR.
+      BRISA_TRUSTED_PROXY_CIDRS: ""
     volumes:
       - /some/data/path:/data
       - /some/secrets/path:/run/secrets/brisa:ro

@@ -1,7 +1,7 @@
 # Fan Control Service — Architecture Document
 
-**Status:** v1.0.2 with unreleased authentication changes
-**Last Updated:** August 21, 2026
+**Status:** v1.1.0
+**Last Updated:** August 25, 2026
 
 ---
 
@@ -75,7 +75,7 @@ Single Docker container. Three logical components running together:
 └─────────────────────────────────────────────────┘
 ```
 
-The controller loop runs as an asyncio background task inside the Uvicorn process — one process, no supervisor. An outer ASGI authentication middleware covers the static UI, API, generated docs, metrics, and framework responses from one enforcement boundary.
+The controller loop runs as an asyncio background task inside the Uvicorn process — one process, no supervisor. An outer pure-ASGI authentication middleware covers the root `StaticFiles` UI, API, generated docs, metrics, and framework responses from one enforcement boundary.
 
 ---
 
@@ -121,6 +121,8 @@ Login failures are keyed by effective client IP. Five credential failures in ten
 By default, the effective client is the immediate peer and forwarded headers are ignored. `BRISA_TRUST_PROXY=true` requires comma-separated explicit networks in `BRISA_TRUSTED_PROXY_CIDRS`. Forwarding is accepted only when the immediate peer is trusted, then evaluated right-to-left through trusted hops. For Nginx Proxy Manager, operators must inspect the NPM container on the network shared with Brisa and trust the measured stable peer as `/32` or `/128`, or the smallest reviewed shared-network CIDR. Deployment-specific hostnames and proxy addresses are examples only, never universal defaults.
 
 Direct trusted-LAN HTTP requires `BRISA_SECURE_COOKIES=false`; public or reverse-proxied HTTPS uses `true`, even when the internal proxy hop is HTTP. There is no reset UI, recovery email, or recovery token. Recovery consists of generating and atomically replacing the hash secret, then restarting Brisa, which also invalidates all sessions.
+
+Frontend rendering builds untrusted dashboard values with DOM properties rather than HTML parsing. The static sidebar is the sole intentional HTML template and has no runtime interpolation. Security responses include `X-Content-Type-Options: nosniff`.
 
 ---
 
@@ -549,8 +551,7 @@ brisa/
 ```yaml
 services:
   brisa:
-    # v1.0.2 predates authentication. Set this only to a reviewed later release.
-    image: ghcr.io/harrentheblack/brisa:${BRISA_IMAGE_TAG:?set an authentication-capable release tag}
+    image: ghcr.io/harrentheblack/brisa:1.1.0
     container_name: brisa
     restart: unless-stopped
     privileged: true
@@ -561,18 +562,19 @@ services:
       BRISA_AUTH_ENABLED: "true"
       BRISA_AUTH_USERNAME: "admin"
       BRISA_PASSWORD_HASH_FILE: /run/secrets/brisa/password_hash
-      # Direct trusted-LAN HTTP only; use "true" for HTTPS.
-      BRISA_SECURE_COOKIES: "false"
+      # Use "false" only for temporary direct HTTP testing on a trusted LAN.
+      BRISA_SECURE_COOKIES: "true"
       BRISA_SESSION_TTL_SECONDS: "28800"
+      # Keep false until the actual NPM peer is measured.
       BRISA_TRUST_PROXY: "false"
+      # Required only when BRISA_TRUST_PROXY=true; use the measured proxy CIDR.
+      BRISA_TRUSTED_PROXY_CIDRS: ""
     volumes:
       - /some/data/path:/data
       - /some/secrets/path:/run/secrets/brisa:ro
 ```
 
-The host secrets directory is mounted read-only. Its `password_hash` file contains only the encoded Argon2id hash. Generate it interactively with `getpass` and `argon2.PasswordHasher` as shown in the README; never store a plaintext password. This example is specifically for direct HTTP on a trusted LAN. HTTPS deployments keep secure cookies enabled and configure proxy trust only for measured, explicit proxy CIDRs.
-
-The published `v1.0.2` image predates authentication. These deployment settings apply only to a later image that includes the unreleased authentication changes; the source version remains `1.0.2` until release preparation reviews the version bump.
+The host secrets directory is mounted read-only. Its `password_hash` file contains only the encoded Argon2id hash. Generate it interactively with `getpass` and `argon2.PasswordHasher` as shown in the README; never store a plaintext password. This example is for HTTPS deployments. Temporary direct HTTP testing on a trusted LAN sets `BRISA_SECURE_COOKIES=false`; proxy trust remains disabled until a measured, explicit proxy CIDR is configured.
 
 ### Volume layout
 
@@ -605,10 +607,10 @@ sudo podman run --privileged \
   -e BRISA_AUTH_ENABLED=true \
   -e BRISA_AUTH_USERNAME=admin \
   -e BRISA_PASSWORD_HASH_FILE=/run/secrets/brisa/password_hash \
-  -e BRISA_SECURE_COOKIES=false \
+  -e BRISA_SECURE_COOKIES=true \
   -e BRISA_SESSION_TTL_SECONDS=28800 \
   -e BRISA_TRUST_PROXY=false \
-  ghcr.io/harrentheblack/brisa:AUTH_RELEASE_TAG
+  ghcr.io/harrentheblack/brisa:1.1.0
 ```
 
 The `-v /sys:/sys` bind mount may be needed with Podman even in rootful mode, as Podman's default sysfs mount can be read-only. Docker does not require this — its `--privileged` flag grants full sysfs access by default.
