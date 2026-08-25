@@ -1,13 +1,81 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const {
   buildPhysicalSensorChoices,
   configuredPhysicalSensorIds,
-  escapeHtml,
   sensorReferenceKind,
   virtualSensorDependencyMessage,
 } = require('../brisa/app/static/app.js');
+
+const STATIC_ROOT = path.join(__dirname, '..', 'brisa', 'app', 'static');
+const HOSTILE = '\"><img src=x onerror=alert(1)>';
+
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName;
+    this.children = [];
+    this.dataset = {};
+    this.style = {};
+    this.classList = {
+      add() {},
+      remove() {},
+      toggle() {},
+    };
+    this.textContent = '';
+    this.value = '';
+  }
+
+  append(...children) {
+    this.children.push(...children);
+  }
+
+  appendChild(child) {
+    this.children.push(child);
+    return child;
+  }
+
+  addEventListener() {}
+}
+
+
+const fakeDocument = {
+  createElement: tagName => new FakeElement(tagName),
+  createTextNode: text => ({ nodeType: 3, textContent: text }),
+};
+
+
+function source(fileName) {
+  return fs.readFileSync(path.join(STATIC_ROOT, fileName), 'utf8');
+}
+
+
+function extractFunction(fileSource, functionName, globals = {}) {
+  const start = fileSource.indexOf(`function ${functionName}(`);
+  assert.notEqual(start, -1, `${functionName} must remain testable`);
+  const bodyStart = fileSource.indexOf('{', start);
+  let depth = 0;
+  let end = bodyStart;
+  for (; end < fileSource.length; end += 1) {
+    if (fileSource[end] === '{') depth += 1;
+    if (fileSource[end] === '}') {
+      depth -= 1;
+      if (depth === 0) break;
+    }
+  }
+  return vm.runInNewContext(`(${fileSource.slice(start, end + 1)})`, globals);
+}
+
+
+function descendants(element) {
+  return [element, ...element.children
+    .filter(child => child instanceof FakeElement)
+    .flatMap(descendants)];
+}
 
 
 test('retains a missing source without selecting its replacement', () => {
@@ -69,9 +137,62 @@ test('explains every fan dependency before virtual deletion', () => {
 });
 
 
-test('escapes configured values before HTML interpolation', () => {
-  assert.equal(
-    escapeHtml('<img src="x" onerror="bad()">'),
-    '&lt;img src=&quot;x&quot; onerror=&quot;bad()&quot;&gt;'
-  );
+test('constructs sensor, fan, alias, virtual, and group labels as text nodes', () => {
+  const devicesSource = source('devices.html');
+  const appendTextCell = extractFunction(devicesSource, 'appendTextCell', {
+    document: fakeDocument,
+  });
+  const checkboxOption = extractFunction(devicesSource, 'checkboxOption', {
+    document: fakeDocument,
+  });
+
+  const row = new FakeElement('tr');
+  appendTextCell(row, HOSTILE);
+  assert.equal(row.children[0].children[0].textContent, HOSTILE);
+
+  const option = checkboxOption('group-item-option', HOSTILE, HOSTILE, HOSTILE, true);
+  const optionNodes = descendants(option);
+  assert.equal(optionNodes.find(node => node.tagName === 'input').value, HOSTILE);
+  assert.equal(optionNodes.filter(node => node.tagName === 'div')[1].textContent, HOSTILE);
+  assert.equal(optionNodes.filter(node => node.tagName === 'div')[2].textContent, HOSTILE);
+});
+
+
+test('constructs dashboard fan, sensor, and group payloads without HTML parsing', () => {
+  const indexSource = source('index.html');
+  const globals = {
+    document: fakeDocument,
+    cardId: prefix => `${prefix}safe`,
+  };
+  const fanCardElement = extractFunction(indexSource, 'fanCardElement', globals);
+  const sensorCardElement = extractFunction(indexSource, 'sensorCardElement', globals);
+  const createGroup = extractFunction(indexSource, 'createGroup', {
+    document: fakeDocument,
+    createCardGrid: () => new FakeElement('div'),
+  });
+
+  const fanCard = fanCardElement({ id: HOSTILE, label: HOSTILE });
+  const sensorCard = sensorCardElement({ sensor_id: HOSTILE, alias: HOSTILE });
+  const group = createGroup(HOSTILE, [], () => new FakeElement('div'));
+
+  assert.equal(descendants(fanCard).find(node => node.className === 'stat-label').textContent, HOSTILE);
+  assert.equal(descendants(sensorCard).find(node => node.className === 'stat-label').textContent, HOSTILE);
+  assert.equal(descendants(group).find(node => node.className === 'dash-group-title').textContent, HOSTILE);
+});
+
+
+test('puts hostile curve and select labels in value and textContent properties', () => {
+  const optionElement = extractFunction(source('fanconfig.html'), 'optionElement', {
+    document: fakeDocument,
+  });
+  const curve = optionElement(HOSTILE, HOSTILE, true);
+
+  assert.equal(curve.value, HOSTILE);
+  assert.equal(curve.textContent, HOSTILE);
+  assert.equal(curve.selected, true);
+
+  const curvesSource = source('curves.html');
+  assert.match(curvesSource, /name\.value = curve\.name;/);
+  assert.match(curvesSource, /curve\.textContent = curveName;/);
+  assert.doesNotMatch(curvesSource, /innerHTML|insertAdjacentHTML/);
 });

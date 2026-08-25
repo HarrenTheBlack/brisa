@@ -41,5 +41,79 @@ jobs:
 
       - name: Check frontend JavaScript
         run: |
-          node --check brisa/app/static/app.js
-          node --test tests/frontend_helpers.test.js
+          node -e 'const fs=require("fs"),vm=require("vm"); for (const file of process.argv.slice(1)) new vm.Script(fs.readFileSync(file,"utf8"), {filename:file});' \
+            brisa/app/static/app.js brisa/app/static/login.js
+          node --test tests/*.test.js
+
+      - name: Check inline frontend JavaScript
+        run: |
+          python - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import subprocess
+          import tempfile
+
+
+          class InlineScriptParser(HTMLParser):
+              def __init__(self):
+                  super().__init__(convert_charrefs=False)
+                  self.active = False
+                  self.module = False
+                  self.parts = []
+                  self.scripts = []
+
+              def handle_starttag(self, tag, attrs):
+                  if tag.lower() != "script":
+                      return
+                  attributes = {name.lower(): value for name, value in attrs}
+                  script_type = (attributes.get("type") or "").strip().lower()
+                  self.active = "src" not in attributes and script_type in {
+                      "", "text/javascript", "application/javascript", "module"
+                  }
+                  self.module = script_type == "module"
+                  self.parts = []
+
+              def handle_data(self, data):
+                  if self.active:
+                      self.parts.append(data)
+
+              def handle_startendtag(self, tag, attrs):
+                  if tag.lower() == "script":
+                      raise SystemExit("Self-closing script tags are not valid browser scripts")
+                  super().handle_startendtag(tag, attrs)
+
+              def handle_endtag(self, tag):
+                  if tag.lower() == "script" and self.active:
+                      self.scripts.append(("".join(self.parts), self.module))
+                      self.active = False
+                      self.module = False
+                      self.parts = []
+
+              def finish(self, path):
+                  self.close()
+                  if self.active:
+                      raise SystemExit(f"Unterminated inline script in {path}")
+
+
+          static = Path("brisa/app/static")
+          with tempfile.TemporaryDirectory() as temporary_directory:
+              temporary = Path(temporary_directory)
+              for html_path in sorted(static.glob("*.html")):
+                  parser = InlineScriptParser()
+                  parser.feed(html_path.read_text(encoding="utf-8"))
+                  parser.finish(html_path)
+                  for index, (script, module) in enumerate(parser.scripts, start=1):
+                      suffix = ".mjs" if module else ".js"
+                      script_path = temporary / f"{html_path.stem}-{index}{suffix}"
+                      script_path.write_text(script, encoding="utf-8")
+                      if module:
+                          subprocess.run(["node", "--check", str(script_path)], check=True)
+                      else:
+                          subprocess.run([
+                              "node", "-e",
+                              "const fs=require('fs'),vm=require('vm');"
+                              "new vm.Script(fs.readFileSync(process.argv[1],'utf8'),"
+                              "{filename:process.argv[1]});",
+                              str(script_path),
+                          ], check=True)
+          PY
