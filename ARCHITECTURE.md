@@ -1,7 +1,7 @@
 # Fan Control Service — Architecture Document
 
-**Status:** v1.0.1 — implemented and running
-**Last Updated:** May 10, 2026
+**Status:** v1.0.2 with unreleased authentication changes
+**Last Updated:** August 21, 2026
 
 ---
 
@@ -75,7 +75,7 @@ Single Docker container. Three logical components running together:
 └─────────────────────────────────────────────────┘
 ```
 
-The controller loop runs as an asyncio background task inside the Uvicorn process — one process, no supervisor.
+The controller loop runs as an asyncio background task inside the Uvicorn process — one process, no supervisor. An outer ASGI authentication middleware covers the static UI, API, generated docs, metrics, and framework responses from one enforcement boundary.
 
 ---
 
@@ -83,21 +83,44 @@ The controller loop runs as an asyncio background task inside the Uvicorn proces
 
 | Component | Choice | Reason |
 |-----------|--------|--------|
-| Language | Python 3.12.9 | Runs liquidctl as subprocess, reads /sys natively, serves web, handles JSON/SQLite — one language for everything |
-| Web framework | FastAPI 0.115.12 | Lightweight, async, automatic OpenAPI/Swagger docs at `/docs` for free, static file serving built in |
+| Language | Python 3.12.13 | Runs liquidctl as subprocess, reads /sys natively, serves web, handles JSON/SQLite — one language for everything |
+| Web framework | FastAPI 0.141.1 + Starlette 1.3.1 | Lightweight ASGI routing, protected OpenAPI/Swagger docs, and patched static file serving |
 | ASGI server | Uvicorn 0.34.0 | Standard FastAPI deployment, minimal overhead |
 | Data validation | Pydantic 2.11.1 | Config validation and serialization |
+| Password hashing | argon2-cffi 25.1.0 | Validates and verifies the administrator's Argon2id password hash without storing a plaintext password |
 | Database | SQLite (stdlib) | No separate service, file-based, survives container restarts, more than adequate for time-series at minute intervals |
 | Fan control | liquidctl 1.13.0 (subprocess) | Only reliable way to control USB fan controllers on Linux; subprocess is intentional — no stable Python API exists |
 | Fan control | hwmon sysfs (direct write) | Controls motherboard PWM fan headers via `/sys/class/hwmon/hwmonN/pwmN`; no additional dependencies |
 | Frontend | Vanilla JS + Chart.js 4.4.0 | No framework needed for this scope; Chart.js handles all graphing; keeps image small |
-| Base image | python:3.12.9-slim | Minimal Debian base; pinned to exact patch version |
+| Base image | python:3.12.13-slim | Minimal Debian base; pinned to a current security patch version |
 
 **Why not a compiled language (Go, Rust)?** liquidctl is Python-only. Wrapping it from another language adds complexity with no benefit.
 
 **Why not Node/Bun for the backend?** Reading `/sys/class/hwmon` and shelling out to liquidctl is more natural in Python. Avoiding two runtimes in the image.
 
 **Why subprocess for liquidctl?** No stable Python API exists for liquidctl. Subprocess is explicit and predictable. The `--direct-access` flag is passed on all control commands to suppress kernel driver fallback warnings on the Aquacomputer Quadro.
+
+**Why exactly one Uvicorn worker?** The fan controller loop, opaque sessions, login rate limits, and current controller state are in process memory. Multiple workers would create independent session stores and duplicate fan-control loops. The image therefore explicitly uses `--workers 1`; multiple replicas are unsupported for the same reason.
+
+**Why disable Uvicorn proxy headers?** Brisa must retain the real immediate TCP peer until its own authentication layer decides whether that peer belongs to an explicitly trusted proxy CIDR. Uvicorn runs with `--no-proxy-headers` so generic forwarded-header processing cannot rewrite the peer first.
+
+---
+
+## Authentication Architecture
+
+Authentication is optional and disabled by default for compatibility with existing deployments. Disabled mode logs a warning and leaves the entire management surface reachable, so it is suitable only where network controls provide the security boundary. If authentication is enabled but its configuration or hash is invalid, management endpoints fail closed with HTTP 503 while the independently started fan-control loop continues.
+
+The administrator password is represented only by a one-record Argon2id hash read from the absolute path in `BRISA_PASSWORD_HASH_FILE`. The recommended deployment mounts a secrets directory read-only with the hash as a file inside it. Hashes are generated interactively with Python `getpass` and `argon2.PasswordHasher`; plaintext passwords are never accepted through an environment variable or configuration file.
+
+Successful login creates a random, opaque session token. Sessions are process-local and memory-only, with a maximum of 16 active sessions. Their lifetime is absolute rather than sliding: `BRISA_SESSION_TTL_SECONDS` defaults to `28800` (eight hours), and activity does not extend expiration. Restarting the process logs out every client; explicit logout removes that session immediately. The browser cookie is `HttpOnly`, `SameSite=Lax`, and secure by default.
+
+Authenticated unsafe methods require the session's CSRF token in the `X-CSRF-Token` header. The UI obtains that token from `/api/auth/me`. The middleware protects UI pages, REST routes, `/docs`, `/openapi.json`, `/metrics`, and `/api/metrics`; only login resources and the login submission route are public while auth is ready.
+
+Login failures are keyed by effective client IP. Five credential failures in ten minutes produce a 15-minute block. Argon2 work is serialized and capped at 30 verification starts per minute to bound CPU and memory pressure. Those rate-limited responses return HTTP 429 with `Retry-After`. The login body is limited to 8192 bytes and a ten-second whole-body read deadline before JSON parsing.
+
+By default, the effective client is the immediate peer and forwarded headers are ignored. `BRISA_TRUST_PROXY=true` requires comma-separated explicit networks in `BRISA_TRUSTED_PROXY_CIDRS`. Forwarding is accepted only when the immediate peer is trusted, then evaluated right-to-left through trusted hops. For Nginx Proxy Manager, operators must inspect the NPM container on the network shared with Brisa and trust the measured stable peer as `/32` or `/128`, or the smallest reviewed shared-network CIDR. Deployment-specific hostnames and proxy addresses are examples only, never universal defaults.
+
+Direct trusted-LAN HTTP requires `BRISA_SECURE_COOKIES=false`; public or reverse-proxied HTTPS uses `true`, even when the internal proxy hop is HTTP. There is no reset UI, recovery email, or recovery token. Recovery consists of generating and atomically replacing the hash secret, then restarting Brisa, which also invalidates all sessions.
 
 ---
 
@@ -284,6 +307,9 @@ No hardcoded sensor or fan names anywhere in the codebase.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| POST | `/api/auth/login` | Validate administrator credentials and create an opaque in-memory session |
+| GET | `/api/auth/me` | Return session identity, CSRF token, and version |
+| POST | `/api/auth/logout` | Invalidate the current session and clear its cookie |
 | GET | `/api/state` | Grouped dashboard data: sensor_groups, fan_groups, ungrouped_sensors, ungrouped_fans — each item includes color |
 | GET | `/api/history` | Time series; params: `hours` (default 24) |
 | GET | `/api/config` | Full config (curves + fan assignments + settings + aliases + virtual sensors + groups + colors) |
@@ -292,6 +318,8 @@ No hardcoded sensor or fan names anywhere in the codebase.
 | POST | `/api/apply` | Trigger immediate controller loop iteration; does not affect loop timer |
 | GET | `/api/metrics` | Prometheus text format (includes virtual sensors with `sensor="virtual"`) |
 | GET | `/docs` | Auto-generated OpenAPI docs (FastAPI built-in) |
+
+Except for login resources and `POST /api/auth/login`, the table's endpoints require a valid session when authentication is enabled. Unsafe methods additionally require `X-CSRF-Token`. Metrics and generated documentation are not public exceptions.
 
 ### /api/state response structure
 
@@ -482,6 +510,7 @@ brisa/
 │   ├── requirements.txt
 │   └── app/
 │       ├── main.py              ← FastAPI app, lifespan, global config/loop state
+│       ├── auth.py              ← Argon2 verification, sessions, rate limits, trusted-proxy/CSRF middleware
 │       ├── models.py            ← Pydantic models (AppConfig, FanConfig with backend field, Curve, VirtualSensor, DashboardGroup, etc.)
 │       ├── config.py            ← load/save/structurally validate config.json, migrate persisted sensor references
 │       ├── sensor_ids.py        ← canonical drive identity builder and shared legacy-ID parser
@@ -491,15 +520,18 @@ brisa/
 │       ├── liquidctl_wrapper.py ← subprocess wrapper for liquidctl
 │       ├── database.py          ← SQLite init, history ID migration, read/write, prune
 │       ├── api/
-│       │   └── routes.py        ← all API endpoints (grouped state, virtual sensor dicts, card colors)
+│       │   ├── auth_routes.py   ← login, current-session/CSRF metadata, logout
+│       │   └── routes.py        ← fan-control API endpoints (grouped state, virtual sensor dicts, card colors)
 │       └── static/              ← vanilla JS + HTML pages
 │           ├── style.css         ← theme, card colors, dashboard group/category styles
 │           ├── app.js
+│           ├── login.js
 │           ├── logo.png
 │           ├── logo_text.png
 │           ├── favicon.png
 │           ├── favicon.ico
 │           ├── index.html        ← Dashboard (grouped layout, card colors)
+│           ├── login.html        ← Administrator login
 │           ├── devices.html      ← Sensors & Fans (aliases, colors, virtual sensors, dashboard groups)
 │           ├── curves.html       ← Curves
 │           ├── fanconfig.html    ← Fan Configuration (virtual sensor support in selector)
@@ -517,16 +549,30 @@ brisa/
 ```yaml
 services:
   brisa:
-    image: brisa:latest
+    # v1.0.2 predates authentication. Set this only to a reviewed later release.
+    image: ghcr.io/harrentheblack/brisa:${BRISA_IMAGE_TAG:?set an authentication-capable release tag}
     container_name: brisa
     restart: unless-stopped
     privileged: true
     network_mode: bridge
     ports:
       - "9595:9595"
+    environment:
+      BRISA_AUTH_ENABLED: "true"
+      BRISA_AUTH_USERNAME: "admin"
+      BRISA_PASSWORD_HASH_FILE: /run/secrets/brisa/password_hash
+      # Direct trusted-LAN HTTP only; use "true" for HTTPS.
+      BRISA_SECURE_COOKIES: "false"
+      BRISA_SESSION_TTL_SECONDS: "28800"
+      BRISA_TRUST_PROXY: "false"
     volumes:
-      - /docker/brisa:/data
+      - /some/data/path:/data
+      - /some/secrets/path:/run/secrets/brisa:ro
 ```
+
+The host secrets directory is mounted read-only. Its `password_hash` file contains only the encoded Argon2id hash. Generate it interactively with `getpass` and `argon2.PasswordHasher` as shown in the README; never store a plaintext password. This example is specifically for direct HTTP on a trusted LAN. HTTPS deployments keep secure cookies enabled and configure proxy trust only for measured, explicit proxy CIDRs.
+
+The published `v1.0.2` image predates authentication. These deployment settings apply only to a later image that includes the unreleased authentication changes; the source version remains `1.0.2` until release preparation reviews the version bump.
 
 ### Volume layout
 
@@ -551,12 +597,23 @@ Podman runs rootless by default on most Linux distributions. Rootless mode uses 
 For hwmon-pwm fan control with Podman, run as real root:
 
 ```bash
-sudo podman run --privileged -v /sys:/sys -p 9595:9595 -v /path/to/data:/data brisa:latest
+sudo podman run --privileged \
+  -v /sys:/sys \
+  -p 9595:9595 \
+  -v /path/to/data:/data \
+  -v /path/to/secrets:/run/secrets/brisa:ro \
+  -e BRISA_AUTH_ENABLED=true \
+  -e BRISA_AUTH_USERNAME=admin \
+  -e BRISA_PASSWORD_HASH_FILE=/run/secrets/brisa/password_hash \
+  -e BRISA_SECURE_COOKIES=false \
+  -e BRISA_SESSION_TTL_SECONDS=28800 \
+  -e BRISA_TRUST_PROXY=false \
+  ghcr.io/harrentheblack/brisa:AUTH_RELEASE_TAG
 ```
 
 The `-v /sys:/sys` bind mount may be needed with Podman even in rootful mode, as Podman's default sysfs mount can be read-only. Docker does not require this — its `--privileged` flag grants full sysfs access by default.
 
-If only using liquidctl (USB) fans, rootless Podman with `--privileged` is sufficient.
+If only using liquidctl (USB) fans, rootless Podman may work, but host USB ACLs, supplementary groups, and SELinux device policy still apply to the invoking user.
 
 ---
 
@@ -566,7 +623,7 @@ The Dockerfile uses a multi-stage build. Build tools (`make`, `gcc`, `libc-dev`)
 
 | Layer | Expected size |
 |-------|--------------|
-| python:3.12.9-slim base | ~130MB |
+| python:3.12.13-slim base | ~130MB |
 | libusb + udev (runtime only) | ~5MB |
 | liquidctl + deps (incl. pillow) | ~45MB |
 | FastAPI + uvicorn + pydantic | ~15MB |
@@ -596,7 +653,9 @@ Brisa requires `privileged: true` to access USB devices and sysfs. A privileged 
 
 This is an inherent requirement for hardware fan control from within a container. There is no way to control USB fan controllers or write to sysfs PWM files without elevated privileges. The same privilege level is required by any containerized fan control solution.
 
-**Mitigation:** Brisa has no network-facing authentication, no outbound network calls, and no code execution features. The attack surface is limited to the REST API on port 9595. For homelab deployments on a trusted local network, the risk is low. Do not expose port 9595 to the internet.
+**Mitigation:** Enable authentication, use HTTPS outside direct trusted-LAN deployments, and restrict port 9595 with a firewall, reverse proxy, or VPN. Generated API docs and metrics are covered by the same session boundary as the UI and API. Authentication reduces unauthorised access but does not sandbox the service: an application compromise can become host compromise because the container is privileged. Public exposure therefore carries materially greater risk than an ordinary web application.
+
+Brisa deliberately runs as one Uvicorn worker and one container replica. Do not increase the worker count or horizontally scale it: doing so duplicates the hardware controller loop and fragments in-memory sessions and rate limits. Uvicorn proxy-header parsing is disabled so Brisa can validate the immediate peer itself, and the container command caps concurrent connections/tasks to reduce slow-client resource pressure.
 
 ### hwmon-pwm sysfs writes
 
@@ -631,7 +690,6 @@ Some hwmon devices expose `fanN_input` (RPM reading) without a corresponding wri
 
 - [ ] Hysteresis support in curves (fans only spin down below X, only spin up above Y)
 - [ ] Multi-device support (multiple liquidctl controllers simultaneously)
-- [ ] Auth on the web UI (basic auth option)
 - [ ] NVMe and other PCI sensor hwmon numbers are stable in practice but not guaranteed — WWID-style stable IDs for those sensors would be a future improvement
 - [ ] GPU fan control via amdgpu hwmon (detected but currently skipped — needs testing and safety review)
 - [ ] Expand hwmon-pwm deduplication blocklist as more liquidctl-backed devices are reported

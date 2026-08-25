@@ -2,7 +2,7 @@
   <img src="brisa/app/static/logo_text.png" width="250">
 </p>
 
-*v1.0.1*
+*v1.0.2*
 
 Brisa is a self-contained Docker service for controlling fans on TrueNAS SCALE (and any other Linux host where you can run Docker but can't install packages directly).
 
@@ -73,32 +73,65 @@ Either backend works independently — you don't need a USB controller to use hw
 Brisa publishes a Docker image to GitHub Container Registry:
 
 ```text
-ghcr.io/brunoorsolon/brisa:latest
+ghcr.io/harrentheblack/brisa:AUTH_RELEASE_TAG
 ```
 
-Create a `docker-compose.yml` file:
+Authentication is unreleased on the current `v1.0.2` production tag. Do not use `v1.0.2` with the authentication variables below; they take effect only in a later image containing this feature. This branch deliberately continues to report `1.0.2` until the release version is reviewed.
+
+Generate an Argon2id password hash. `getpass` reads the password from the terminal, and only the encoded hash is written to disk; the plaintext password is never placed in Compose, shell history, or the secret file.
+
+```bash
+umask 077
+mkdir -p secrets
+python3 -m venv .brisa-hash-venv
+.brisa-hash-venv/bin/python -m pip install 'argon2-cffi==25.1.0'
+.brisa-hash-venv/bin/python - <<'PY' > secrets/password_hash
+from getpass import getpass
+from argon2 import PasswordHasher
+
+password = getpass("New Brisa password: ")
+if not password:
+    raise SystemExit("Password must not be empty")
+if password != getpass("Confirm password: "):
+    raise SystemExit("Passwords do not match")
+print(PasswordHasher().hash(password))
+PY
+rm -rf .brisa-hash-venv
+```
+
+Create a `docker-compose.yml` file. This example is for direct HTTP access on a trusted LAN, so secure cookies are explicitly disabled; do not use that setting for public or HTTPS deployments.
 
 ```yaml
 services:
   brisa:
-    image: ghcr.io/brunoorsolon/brisa:latest
+    # v1.0.2 predates authentication. Set this only to a reviewed later release.
+    image: ghcr.io/harrentheblack/brisa:${BRISA_IMAGE_TAG:?set an authentication-capable release tag}
     container_name: brisa
     restart: unless-stopped
     privileged: true
     network_mode: bridge
     ports:
       - "9595:9595"
+    environment:
+      BRISA_AUTH_ENABLED: "true"
+      BRISA_AUTH_USERNAME: "admin"
+      BRISA_PASSWORD_HASH_FILE: /run/secrets/brisa/password_hash
+      # LAN HTTP only. Use "true" whenever the browser reaches Brisa over HTTPS.
+      BRISA_SECURE_COOKIES: "false"
+      BRISA_SESSION_TTL_SECONDS: "28800"
+      BRISA_TRUST_PROXY: "false"
     volumes:
-      - /docker/brisa:/data
+      - /some/data/path:/data
+      - /some/secrets/path:/run/secrets/brisa:ro
 ```
 
-Update `/docker/brisa` to the host path where you want Brisa to store its config and history, then start it:
+Replace `/some/data/path` and `/some/secrets/path` with host paths for Brisa data and secrets. Place the generated file at `/some/secrets/path/password_hash`; the directory is mounted read-only and the file contains an Argon2id hash, never the password. Once an authentication-capable release exists, set `BRISA_IMAGE_TAG` to that reviewed tag and start Brisa:
 
 ```bash
-docker compose up -d
+BRISA_IMAGE_TAG=AUTH_RELEASE_TAG docker compose up -d
 ```
 
-The web UI is available at `http://<host>:9595`.
+The login page is available at `http://<host>:9595` with username `admin` and the password entered during hash generation.
 
 On first run, a default `config.json` is created at your `/data` volume path. No fans will be controlled until you configure curves and fan assignments through the UI.
 
@@ -164,6 +197,8 @@ Each sensor or fan can be assigned an accent color from a curated palette: teal,
   history.db     ← SQLite time-series database
 ```
 
+The password hash is mounted separately under `/run/secrets` and is not stored in `/data`.
+
 Recognized legacy drive IDs in `history.db` are re-keyed to canonical drive IDs during database initialization. Timestamps and temperatures are preserved; unrelated sensor and fan history is not modified.
 
 ---
@@ -175,21 +210,7 @@ Recognized legacy drive IDs in `history.db` are re-keyed to canonical drive IDs 
 - Mount `/data` to a path on your NVMe pool — SQLite does not perform well on spinning rust
 - Many NAS-specific boards (e.g. Topton N22) lack a Super I/O chip with a Linux kernel driver — on these systems, hwmon-pwm fans will not be detected and only liquidctl (USB) fans are available
 
-Example `docker-compose.yml`:
-
-```yaml
-services:
-  brisa:
-    image: ghcr.io/brunoorsolon/brisa:latest
-    container_name: brisa
-    restart: unless-stopped
-    privileged: true
-    network_mode: bridge
-    ports:
-      - "9595:9595"
-    volumes:
-      - /docker/brisa:/data
-```
+Use the authenticated `docker-compose.yml` from Quick Start. Keep `BRISA_SECURE_COOKIES=false` only when connecting directly over trusted LAN HTTP; use HTTPS and secure cookies for access through a reverse proxy.
 
 ---
 
@@ -204,10 +225,19 @@ sudo podman run --privileged \
   -v /sys:/sys \
   -p 9595:9595 \
   -v /path/to/data:/data \
-  ghcr.io/brunoorsolon/brisa:latest
+  -v /path/to/secrets:/run/secrets/brisa:ro \
+  -e BRISA_AUTH_ENABLED=true \
+  -e BRISA_AUTH_USERNAME=admin \
+  -e BRISA_PASSWORD_HASH_FILE=/run/secrets/brisa/password_hash \
+  -e BRISA_SECURE_COOKIES=false \
+  -e BRISA_SESSION_TTL_SECONDS=28800 \
+  -e BRISA_TRUST_PROXY=false \
+  ghcr.io/harrentheblack/brisa:AUTH_RELEASE_TAG
 ```
 
-If only using liquidctl (USB) fans, rootless Podman with `--privileged` is sufficient.
+This Podman command is also limited to direct trusted-LAN HTTP. Put the generated `password_hash` under `/path/to/secrets`; it contains only the encoded hash and is mounted read-only.
+
+If only using liquidctl (USB) fans, rootless Podman may work, but the invoking user still needs host USB-device permissions. Device ACLs, supplementary groups, and SELinux policy remain host-specific.
 
 ---
 
@@ -217,12 +247,78 @@ Brisa runs with `privileged: true`, which gives the container effectively root a
 
 What this means in practice: the container can access all host devices, write to any sysfs path, and mount filesystems. Brisa only writes to `/sys/class/hwmon/hwmonN/pwmN` and `pwmN_enable` files, but the capability is broader than what the application uses.
 
-**Recommendations:**
-- Do not expose port 9595 to the internet — Brisa has no authentication
-- Use `restart: unless-stopped` to ensure fans are re-managed after a crash
-- Review the container image contents if running on a sensitive system
+### Authentication compatibility
 
-For homelab deployments on a trusted local network, the practical risk is low.
+Authentication is disabled by default so existing deployments continue to start. Brisa logs a warning in this mode. Disabled authentication is a compatibility mode, not a secure deployment choice: every UI page and API endpoint is available to any client that can reach port 9595. Set `BRISA_AUTH_ENABLED=true` and provide both the administrator username and hash file for normal deployments. Invalid enabled-auth configuration fails the management interface closed while the independently scheduled fan-control loop continues.
+
+The authentication settings are:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BRISA_AUTH_ENABLED` | `false` | Enables the single administrator login. |
+| `BRISA_AUTH_USERNAME` | none | Administrator name; required when auth is enabled. |
+| `BRISA_PASSWORD_HASH_FILE` | none | Absolute path to a one-record Argon2id hash file; required when auth is enabled. |
+| `BRISA_SECURE_COOKIES` | `true` | Adds the browser cookie `Secure` attribute. |
+| `BRISA_SESSION_TTL_SECONDS` | `28800` | Absolute session lifetime; allowed range is 300-86400 seconds. |
+| `BRISA_TRUST_PROXY` | `false` | Allows validated `X-Forwarded-For` use for login rate-limit attribution. |
+| `BRISA_TRUSTED_PROXY_CIDRS` | none | Comma-separated explicit proxy networks; required when proxy trust is enabled. |
+
+Sessions are opaque and stored only in memory. The default lifetime is an absolute eight hours from login and is not extended by activity. A container restart invalidates every session; logout invalidates the current session immediately. Cookies are `HttpOnly` and `SameSite=Lax`. State-changing requests also require the per-session CSRF token in `X-CSRF-Token`; the frontend obtains it from `/api/auth/me` and adds it to requests.
+
+Login failures are tracked by effective client address. Five credential failures within ten minutes block that client for 15 minutes. Argon2 verification is additionally limited to one concurrent verification and 30 starts per minute; those throttled responses use HTTP 429 and `Retry-After`. Login bodies are bounded to 8192 bytes and must complete within ten seconds; malformed framing and oversized bodies are rejected before JSON or Argon2 processing. These controls are why proxy client-address attribution must not accept spoofable forwarding headers.
+
+There is no password reset, recovery email, or recovery token. To replace a forgotten or compromised password, generate a new Argon2id hash with the Quick Start procedure, atomically replace the configured hash file, and restart the container. The restart loads the replacement and invalidates existing sessions. Never put a plaintext password in an environment variable, Compose file, or mounted file.
+
+### Cookies and TLS
+
+Set `BRISA_SECURE_COOKIES=false` only for direct HTTP access on a trusted LAN. Browsers do not send secure cookies over HTTP. For any public, untrusted-network, or reverse-proxy deployment, terminate HTTPS at the proxy and leave `BRISA_SECURE_COOKIES=true`; this remains correct when the proxy-to-Brisa hop itself uses HTTP. Prefer a VPN or network access controls even with authentication because compromise of this privileged service has host-level impact.
+
+### Trusted proxies
+
+`BRISA_TRUST_PROXY=false` is the safe default and uses the immediate TCP peer for login rate limits. Uvicorn is launched with `--no-proxy-headers` so it cannot rewrite that peer from unvalidated forwarded headers before Brisa evaluates it.
+
+If a reverse proxy is used, set `BRISA_TRUST_PROXY=true` and set `BRISA_TRUSTED_PROXY_CIDRS` only to the actual proxy peers that can connect to Brisa. Brisa walks `X-Forwarded-For` from right to left through trusted hops; forwarding headers from any other peer are ignored. Do not trust all private address space or a broad Docker range.
+
+For Nginx Proxy Manager (NPM), measure the address on the network it actually shares with Brisa rather than copying an address from somebody else's deployment:
+
+```bash
+docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{println $name $network.IPAddress}}{{end}}' <npm-container>
+```
+
+Identify the shared network and either assign NPM a stable address and trust that exact IPv4 `/32` (or IPv6 `/128`), or trust the smallest explicit shared-network CIDR after reviewing what other containers can join it. For example, a measured peer of `172.30.0.10` is configured as `BRISA_TRUSTED_PROXY_CIDRS=172.30.0.10/32`; this address is only an illustration, not a universal NPM value.
+
+### Post-NPM follow-up
+
+- [ ] **TrueNAS Application Info version:** after authentication and Nginx Proxy Manager deployment are complete, determine where TrueNAS Custom Apps obtains the version shown in Application Info (custom-app metadata, Compose metadata, Docker labels, image metadata, an `app_version` field, or another TrueNAS-specific source). Make it match the actual Brisa release without introducing a second manually maintained version when it can be derived from the release version.
+- [ ] **History storage architecture:** after authentication and Nginx Proxy Manager deployment are complete, review the actual `history.db` workload before changing databases. Evaluate the schema and indexes, write frequency and reading volume, expected growth, `history_days` retention and pruning performance, query patterns, concurrency and transaction behavior, integrity/corruption recovery, backup/restore, SQLite WAL mode, batching and one-transaction-per-reading overhead, indexes, aggregation/downsampling, long-term retention, and migration strategy. Compare keeping SQLite largely as-is, optimizing SQLite, SQLite WAL plus batching/index improvements, PostgreSQL, PostgreSQL plus TimescaleDB, and another time-series approach only if justified. Do not assume PostgreSQL is better: Brisa is a small self-contained appliance-like service, and another database container must be justified by measured workload and operational value.
+
+### Release-time version checklist
+
+When a reviewed authentication release is approved, update the release version deliberately. Do not blindly replace historical `1.0.x` references or change the current development value before release review.
+
+- [ ] Update `brisa/app/version.py`.
+- [ ] Verify FastAPI's application version and `/api/auth/me` use the canonical value.
+- [ ] Verify the frontend-displayed version uses the API-reported value.
+- [ ] Update current-release references in `README.md`, `ARCHITECTURE.md`, `CHANGELOG.md`, and `docker-compose.yml.example`, while preserving historical changelog entries.
+- [ ] Update Docker/GHCR image examples, install instructions containing image tags, and version badges if present.
+- [ ] Review Docker labels, image metadata, and any TrueNAS-specific metadata if those version-bearing fields exist.
+- [ ] Update tests asserting the application version.
+- [ ] Replace `AUTH_RELEASE_TAG` placeholders only in the approved release-preparation change.
+
+### Protected endpoints
+
+When authentication is enabled, protection includes the UI, REST API, `/docs`, `/openapi.json`, and Prometheus endpoints `/metrics` and `/api/metrics`. Monitoring clients must maintain a valid Brisa session; there is no separate metrics token or unauthenticated metrics exception.
+
+### Process model
+
+Brisa must run as one Uvicorn worker and one container replica. Sessions, rate limits, and controller state are process-local, and every worker would also start a fan-control loop. The image therefore specifies `--workers 1`, disables Uvicorn proxy-header rewriting, and caps concurrent connections/tasks. Do not override the worker count or horizontally scale this service.
+
+**Recommendations:**
+- Enable authentication and restrict port 9595 at the firewall or reverse proxy.
+- Use `restart: unless-stopped` to ensure fans are re-managed after a crash.
+- Review the container image contents if running on a sensitive system.
+
+Authentication reduces network exposure but does not reduce the privilege of a successful compromise. Treat Brisa as a host-privileged management service.
 
 ---
 
@@ -244,10 +340,13 @@ For virtual sensors, the safety floor triggers only when all source sensors are 
 
 ## API
 
-Full OpenAPI docs at `http://<host>:9595/docs`.
+Full OpenAPI docs are at `http://<host>:9595/docs`. They require a valid session when authentication is enabled.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| POST | `/api/auth/login` | Log in and create a session |
+| GET | `/api/auth/me` | Current session, CSRF token, and version |
+| POST | `/api/auth/logout` | Invalidate the current session |
 | GET | `/api/state` | Grouped dashboard data: fan groups, sensor groups, ungrouped items |
 | GET | `/api/history` | Time series (`?hours=24`) |
 | GET | `/api/config` | Full config |
@@ -255,6 +354,7 @@ Full OpenAPI docs at `http://<host>:9595/docs`.
 | GET | `/api/devices` | Detected sensors, virtual sensors, and fans |
 | POST | `/api/apply` | Trigger immediate control loop iteration |
 | GET | `/api/metrics` | Prometheus metrics (includes virtual sensors) |
+| GET | `/metrics` | Prometheus metrics without virtual-sensor enrichment |
 
 ---
 
@@ -269,7 +369,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full description of the design, dat
 For local development, build the image from source:
 
 ```bash
-git clone https://github.com/brunoorsolon/brisa.git
+git clone https://github.com/HarrenTheBlack/brisa.git
 cd brisa
 cp docker-compose.yml.example docker-compose.yml
 ```

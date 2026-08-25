@@ -1,11 +1,21 @@
 services:
   brisa:
-    image: ghcr.io/brunoorsolon/brisa:latest
+    # v1.0.2 predates authentication. Set this only to a reviewed later release.
+    image: ghcr.io/harrentheblack/brisa:${BRISA_IMAGE_TAG:?set an authentication-capable release tag}
     container_name: brisa
     restart: unless-stopped
     privileged: true
     network_mode: bridge
     ports:
       - "9595:9595"
+    environment:
+      BRISA_AUTH_ENABLED: "true"
+      BRISA_AUTH_USERNAME: "admin"
+      BRISA_PASSWORD_HASH_FILE: /run/secrets/brisa/password_hash
+      # LAN HTTP only. Use "true" whenever the browser reaches Brisa over HTTPS.
+      BRISA_SECURE_COOKIES: "false"
+      BRISA_SESSION_TTL_SECONDS: "28800"
+      BRISA_TRUST_PROXY: "false"
     volumes:
-      - /docker/brisa:/data
+      - /some/data/path:/data
+      - /some/secrets/path:/run/secrets/brisa:ro
