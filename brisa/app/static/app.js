@@ -43,18 +43,115 @@ function showToast(msg, type = 'ok') {
 }
 
 /* ── API helpers ────────────────────────────────────────── */
-async function api(method, path, body = null) {
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json' },
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+let authSession = {
+  authEnabled: false,
+  authenticated: false,
+  username: null,
+  csrfToken: null,
+  version: '',
+};
+let redirectingToLogin = false;
+
+function normalizeAuthState(payload) {
+  return {
+    authEnabled: payload?.auth_enabled === true,
+    authenticated: payload?.authenticated === true,
+    username: typeof payload?.username === 'string' ? payload.username : null,
+    csrfToken: typeof payload?.csrf_token === 'string' ? payload.csrf_token : null,
+    version: typeof payload?.version === 'string' ? payload.version : '',
   };
-  if (body !== null) opts.body = JSON.stringify(body);
-  const res = await fetch(`/api${path}`, opts);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(Array.isArray(err.detail) ? err.detail.join('; ') : err.detail);
+}
+
+function apiRequestOptions(method, body = null, csrfToken = null) {
+  const normalizedMethod = String(method).toUpperCase();
+  const headers = { Accept: 'application/json' };
+  const options = {
+    method: normalizedMethod,
+    headers,
+    credentials: 'same-origin',
+  };
+  if (body !== null) {
+    headers['Content-Type'] = 'application/json';
+    options.body = JSON.stringify(body);
   }
+  if (WRITE_METHODS.has(normalizedMethod) && csrfToken) {
+    headers['X-CSRF-Token'] = csrfToken;
+  }
+  return options;
+}
+
+function redirectToLogin(locationObject) {
+  if (redirectingToLogin) return false;
+  redirectingToLogin = true;
+  authSession.username = null;
+  authSession.csrfToken = null;
+  locationObject.replace('/login');
+  return true;
+}
+
+async function responseError(response, fallback) {
+  const payload = await response.json().catch(() => null);
+  const detail = payload?.detail;
+  const message = Array.isArray(detail) ? detail.join('; ') : detail;
+  return new Error(typeof message === 'string' && message ? message : fallback);
+}
+
+async function bootstrapAuth(fetchImpl, locationObject) {
+  const response = await fetchImpl('/api/auth/me', apiRequestOptions('GET'));
+  if (response.status === 401) {
+    redirectToLogin(locationObject);
+    throw new Error('Authentication required');
+  }
+  if (!response.ok) {
+    throw await responseError(response, 'Unable to initialize authentication');
+  }
+
+  authSession = normalizeAuthState(await response.json());
+  if (authSession.authEnabled && !authSession.authenticated) {
+    redirectToLogin(locationObject);
+    throw new Error('Authentication required');
+  }
+  return authSession;
+}
+
+const authReady = typeof window !== 'undefined'
+  ? bootstrapAuth(window.fetch.bind(window), window.location)
+  : Promise.resolve(authSession);
+authReady.catch(() => {});
+
+async function api(method, path, body = null) {
+  await authReady;
+  if (redirectingToLogin) throw new Error('Authentication required');
+
+  const opts = apiRequestOptions(method, body, authSession.csrfToken);
+  const res = await fetch(`/api${path}`, opts);
+  if (res.status === 401) {
+    redirectToLogin(window.location);
+    throw new Error('Authentication required');
+  }
+  if (!res.ok) {
+    throw await responseError(res, res.statusText || 'Request failed');
+  }
+  if (res.status === 204) return null;
   return res.json();
+}
+
+async function logout() {
+  document.querySelectorAll('[data-logout]').forEach(button => {
+    button.disabled = true;
+  });
+  try {
+    await api('POST', '/auth/logout');
+    redirectToLogin(window.location);
+  } catch (error) {
+    if (!redirectingToLogin) {
+      document.querySelectorAll('[data-logout]').forEach(button => {
+        button.disabled = false;
+      });
+      showToast('Unable to log out. Please try again.', 'error');
+    }
+  }
 }
 
 /* ── Value flash animation ──────────────────────────────── */
@@ -86,15 +183,6 @@ function relativeTime(ts) {
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   return `${Math.floor(diff / 3600)}h ago`;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
 }
 
 /* ── Sensor reference helpers ───────────────────────────── */
@@ -169,7 +257,7 @@ const SIDEBAR_HTML = `
     <img src="/logo.png" alt="Brisa" style="width:48px; height:48px; object-fit:contain; flex-shrink:0;" />
     <div>
       <div class="wordmark">bri<span>sa</span></div>
-      <div class="version">v1.0.1</div>
+      <div class="version" id="app-version"></div>
     </div>
   </div>
 </div>
@@ -226,12 +314,52 @@ const SIDEBAR_HTML = `
   </a>
 </nav>
 <div class="sidebar-footer">
-  <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">☀ Light</button>
-  <a href="https://github.com/brunoorsolon/brisa" target="_blank" rel="noopener" title="GitHub" style="color:var(--text-dim); opacity:0.5; transition:opacity 0.2s;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.5'">
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-  </a>
+  <div class="sidebar-auth" id="sidebar-auth" hidden>
+    <span class="auth-username" id="auth-username"></span>
+    <button class="logout-button" type="button" data-logout>Log out</button>
+  </div>
+  <div class="sidebar-tools">
+    <button class="theme-toggle" id="theme-toggle" type="button">☀ Light</button>
+    <a class="github-link" href="https://github.com/HarrenTheBlack/brisa" target="_blank" rel="noopener" title="GitHub">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </div>
 </div>
 `;
+
+function displayVersion(version) {
+  if (!version) return '';
+  return version.startsWith('v') ? version : `v${version}`;
+}
+
+function renderAuthChrome(state) {
+  const version = document.getElementById('app-version');
+  if (version) version.textContent = displayVersion(state.version);
+  if (!state.authEnabled || !state.authenticated) return;
+
+  const sidebarAuth = document.getElementById('sidebar-auth');
+  const username = document.getElementById('auth-username');
+  if (sidebarAuth) sidebarAuth.hidden = false;
+  if (username) username.textContent = state.username || '';
+  document.body.classList.add('auth-active');
+
+  const mobileAuth = document.createElement('div');
+  mobileAuth.className = 'mobile-auth';
+  const mobileUsername = document.createElement('span');
+  mobileUsername.className = 'auth-username';
+  mobileUsername.textContent = state.username || '';
+  const mobileLogout = document.createElement('button');
+  mobileLogout.className = 'logout-button';
+  mobileLogout.type = 'button';
+  mobileLogout.dataset.logout = '';
+  mobileLogout.textContent = 'Log out';
+  mobileAuth.append(mobileUsername, mobileLogout);
+  document.body.appendChild(mobileAuth);
+
+  document.querySelectorAll('[data-logout]').forEach(button => {
+    button.addEventListener('click', logout);
+  });
+}
 
 function initPage() {
   // Inject sidebar
@@ -239,7 +367,9 @@ function initPage() {
   if (sidebar) sidebar.innerHTML = SIDEBAR_HTML;
 
   initTheme();
+  document.getElementById('theme-toggle')?.addEventListener('click', toggleTheme);
   setActiveNav();
+  authReady.then(renderAuthChrome).catch(() => {});
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -248,7 +378,9 @@ if (typeof module !== 'undefined' && module.exports) {
     configuredPhysicalSensorIds,
     buildPhysicalSensorChoices,
     virtualSensorDependencyMessage,
-    escapeHtml,
+    normalizeAuthState,
+    apiRequestOptions,
+    displayVersion,
   };
 }
 

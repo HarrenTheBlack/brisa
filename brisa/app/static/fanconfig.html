@@ -73,7 +73,7 @@
             <h1 class="page-title">Fan Config</h1>
             <p class="page-subtitle">Assign a temperature sensor and curve to each fan</p>
           </div>
-          <button class="btn btn-primary" onclick="openAddModal()">+ Add Fan</button>
+          <button class="btn btn-primary" id="add-fan-btn">+ Add Fan</button>
         </div>
       </div>
 
@@ -130,7 +130,7 @@
           <div class="toggle-sub">Bypass curve and hold a fixed speed</div>
         </div>
         <label class="toggle">
-          <input type="checkbox" id="modal-override-enabled" onchange="toggleOverrideInput()" />
+          <input type="checkbox" id="modal-override-enabled" />
           <span class="toggle-slider"></span>
         </label>
       </div>
@@ -141,8 +141,8 @@
       </div>
 
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveEntry()">Save</button>
+        <button class="btn btn-ghost" id="cancel-fan-btn">Cancel</button>
+        <button class="btn btn-primary" id="save-fan-btn">Save</button>
       </div>
     </div>
   </div>
@@ -182,35 +182,68 @@
     function render() {
       const tbody = document.getElementById('fanconfig-tbody');
       if (!config.fan_configs.length) {
-        tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-muted);padding:24px;text-align:center">
-          No fans configured. Click <strong>+ Add Fan</strong> to start.
-        </td></tr>`;
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 6;
+        cell.style.cssText = 'color:var(--text-muted);padding:24px;text-align:center';
+        cell.textContent = 'No fans configured. Click + Add Fan to start.';
+        row.appendChild(cell);
+        tbody.replaceChildren(row);
         return;
       }
-      tbody.innerHTML = config.fan_configs.map((fc, i) => {
+      const rows = config.fan_configs.map((fc, i) => {
         const isOverride = fc.override_percent != null;
-        return `
-          <tr>
-            <td><span class="mono" style="font-size:12px">${escapeHtml(fc.fan_id)}</span></td>
-            <td>${escapeHtml(fc.fan_label || '—')}</td>
-            <td><span class="mono" style="font-size:11px;color:var(--text-dim)">${escapeHtml(sensorDisplayName(fc.sensor_id))}</span></td>
-            <td>${isOverride
-              ? '<span class="badge badge-dim" style="text-decoration:line-through">' + fc.curve_name + '</span>'
-              : '<span class="badge badge-green">' + fc.curve_name + '</span>'
-            }</td>
-            <td>${isOverride
-              ? `<span class="badge badge-warn">${fc.override_percent}% manual</span>`
-              : '<span style="color:var(--text-muted);font-size:12px">—</span>'
-            }</td>
-            <td style="text-align:right">
-              <button class="btn btn-ghost" style="padding:5px 10px;font-size:12px;margin-right:6px"
-                onclick="openEditModal(${i})">Edit</button>
-              <button class="btn btn-danger-ghost" style="padding:5px 10px;font-size:12px"
-                onclick="deleteEntry(${i})">Delete</button>
-            </td>
-          </tr>
-        `;
-      }).join('');
+        const row = document.createElement('tr');
+        appendFanCell(row, fc.fan_id, 'mono', 'font-size:12px');
+        appendFanCell(row, fc.fan_label || '—');
+        appendFanCell(row, sensorDisplayName(fc.sensor_id), 'mono', 'font-size:11px;color:var(--text-dim)');
+        const curveClass = isOverride ? 'badge badge-dim' : 'badge badge-green';
+        const curveStyle = isOverride ? 'text-decoration:line-through' : '';
+        appendFanCell(row, fc.curve_name, curveClass, curveStyle);
+        appendFanCell(
+          row,
+          isOverride ? `${fc.override_percent}% manual` : '—',
+          isOverride ? 'badge badge-warn' : '',
+          isOverride ? '' : 'color:var(--text-muted);font-size:12px'
+        );
+        const actions = document.createElement('td');
+        actions.style.textAlign = 'right';
+        actions.append(
+          fanActionButton('Edit', 'btn btn-ghost', () => openEditModal(i), 'padding:5px 10px;font-size:12px;margin-right:6px'),
+          fanActionButton('Delete', 'btn btn-danger-ghost', () => deleteEntry(i), 'padding:5px 10px;font-size:12px')
+        );
+        row.appendChild(actions);
+        return row;
+      });
+      tbody.replaceChildren(...rows);
+    }
+
+    function appendFanCell(row, text, className = '', style = '') {
+      const cell = document.createElement('td');
+      const span = document.createElement('span');
+      if (className) span.className = className;
+      if (style) span.style.cssText = style;
+      span.textContent = text;
+      cell.appendChild(span);
+      row.appendChild(cell);
+    }
+
+    function fanActionButton(text, className, action, style = '') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.style.cssText = style;
+      button.textContent = text;
+      button.addEventListener('click', action);
+      return button;
+    }
+
+    function optionElement(value, label, selected = false) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      option.selected = selected;
+      return option;
     }
 
     function toggleOverrideInput() {
@@ -225,14 +258,14 @@
       const curveSel = document.getElementById('modal-curve-name');
 
       const fanOptions = (devices.fans || []).map(f =>
-        `<option value="${escapeHtml(f.id)}" ${existing?.fan_id === f.id ? 'selected' : ''}>${escapeHtml(f.label)}</option>`
+        optionElement(f.id, f.label, existing?.fan_id === f.id)
       );
       if (existing?.fan_id && !(devices.fans || []).some(f => f.id === existing.fan_id)) {
         fanOptions.unshift(
-          `<option value="${escapeHtml(existing.fan_id)}" selected>${escapeHtml(existing.fan_label || existing.fan_id)} — unavailable</option>`
+          optionElement(existing.fan_id, `${existing.fan_label || existing.fan_id} — unavailable`, true)
         );
       }
-      fanSel.innerHTML = fanOptions.join('');
+      fanSel.replaceChildren(...fanOptions);
 
       const physicalChoices = buildPhysicalSensorChoices(
         devices.sensors || [],
@@ -244,37 +277,44 @@
           ? sensor.id
           : `${sensor.label} (${sensor.id})`;
         const suffix = sensor.unavailable ? ' — unavailable physical' : '';
-        return `<option value="${escapeHtml(sensor.id)}" ${existing?.sensor_id === sensor.id ? 'selected' : ''}>${escapeHtml(display)}${suffix}</option>`;
+        return optionElement(sensor.id, display + suffix, existing?.sensor_id === sensor.id);
       });
 
       const virtualOptions = (config.virtual_sensors || []).map(vs => {
           const display = vs.name + ' [virtual]';
-          return `<option value="${escapeHtml(vs.id)}" ${existing?.sensor_id === vs.id ? 'selected' : ''}>${escapeHtml(display)}</option>`;
+          return optionElement(vs.id, display, existing?.sensor_id === vs.id);
         });
 
       if (existing?.sensor_id && sensorReferenceKind(existing.sensor_id, config) === 'virtual' &&
           !(config.virtual_sensors || []).some(vs => vs.id === existing.sensor_id)) {
         virtualOptions.push(
-          `<option value="${escapeHtml(existing.sensor_id)}" selected>${escapeHtml(existing.sensor_id)} — unavailable virtual; reassign required</option>`
+          optionElement(existing.sensor_id, `${existing.sensor_id} — unavailable virtual; reassign required`, true)
         );
       }
 
       const sensorGroups = [];
       if (physicalOptions.length) {
-        sensorGroups.push(`<optgroup label="Physical sensors">${physicalOptions.join('')}</optgroup>`);
+        const physicalGroup = document.createElement('optgroup');
+        physicalGroup.label = 'Physical sensors';
+        physicalGroup.append(...physicalOptions);
+        sensorGroups.push(physicalGroup);
       }
       if (virtualOptions.length) {
-        sensorGroups.push(`<optgroup label="Virtual sensors">${virtualOptions.join('')}</optgroup>`);
+        const virtualGroup = document.createElement('optgroup');
+        virtualGroup.label = 'Virtual sensors';
+        virtualGroup.append(...virtualOptions);
+        sensorGroups.push(virtualGroup);
       }
-      sensorSel.innerHTML = sensorGroups.join('') || '<option value="">— No sensors available —</option>';
+      sensorSel.replaceChildren(...(sensorGroups.length
+        ? sensorGroups
+        : [optionElement('', '— No sensors available —')]));
 
-      curveSel.innerHTML = (config.curves || []).map(c =>
-        `<option value="${c.name}" ${existing?.curve_name === c.name ? 'selected' : ''}>${c.name}</option>`
-      ).join('');
-
-      if (!config.curves.length) {
-        curveSel.innerHTML = '<option value="">— No curves defined —</option>';
-      }
+      const curveOptions = (config.curves || []).map(c =>
+        optionElement(c.name, c.name, existing?.curve_name === c.name)
+      );
+      curveSel.replaceChildren(...(curveOptions.length
+        ? curveOptions
+        : [optionElement('', '— No curves defined —')]));
 
       // Override fields
       const overrideEnabled = existing?.override_percent != null;
@@ -363,6 +403,10 @@
       }
     }
 
+    document.getElementById('add-fan-btn').addEventListener('click', openAddModal);
+    document.getElementById('modal-override-enabled').addEventListener('change', toggleOverrideInput);
+    document.getElementById('cancel-fan-btn').addEventListener('click', closeModal);
+    document.getElementById('save-fan-btn').addEventListener('click', saveEntry);
     loadAll();
   </script>
 </body>

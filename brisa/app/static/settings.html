@@ -55,8 +55,7 @@
           <div class="form-group">
             <label class="form-label">History retention</label>
             <div class="input-with-unit">
-              <input class="form-input" type="number" id="history-days" min="1" max="365"
-                oninput="checkRowWarning()" />
+              <input class="form-input" type="number" id="history-days" min="1" max="365" />
               <span class="unit">days</span>
             </div>
           </div>
@@ -65,7 +64,7 @@
         <div class="warning-box" id="row-warning"></div>
 
         <div style="margin-top:8px">
-          <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+          <button class="btn btn-primary" id="save-settings" type="button">Save Settings</button>
         </div>
       </div>
     </div>
@@ -115,6 +114,8 @@
       }
     }
 
+    document.getElementById('history-days').addEventListener('input', checkRowWarning);
+    document.getElementById('save-settings').addEventListener('click', saveSettings);
     loadConfig();
   </script>
 </body>

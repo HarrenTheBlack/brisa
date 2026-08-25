@@ -110,7 +110,7 @@
             <h1 class="page-title">Sensors & Fans</h1>
             <p class="page-subtitle">All detected hardware — set aliases, colors, and manage dashboard groups</p>
           </div>
-          <button class="btn btn-ghost" onclick="loadDevices()" id="refresh-btn">↺ Refresh</button>
+          <button class="btn btn-ghost" id="refresh-btn">↺ Refresh</button>
         </div>
       </div>
 
@@ -136,7 +136,7 @@
       <div class="section">
         <div class="section-header">
           <span class="section-title">Virtual Sensors</span>
-          <button class="btn btn-ghost" onclick="openVirtualSensorModal()">+ New Virtual Sensor</button>
+          <button class="btn btn-ghost" id="new-vsensor-btn">+ New Virtual Sensor</button>
         </div>
         <div class="card" style="padding:0">
           <table class="data-table">
@@ -180,8 +180,8 @@
         <div class="section-header">
           <span class="section-title">Dashboard Groups</span>
           <div style="display:flex; gap:8px;">
-            <button class="btn btn-ghost" onclick="openGroupModal('sensor')">+ Sensor Group</button>
-            <button class="btn btn-ghost" onclick="openGroupModal('fan')">+ Fan Group</button>
+            <button class="btn btn-ghost" id="new-sensor-group-btn">+ Sensor Group</button>
+            <button class="btn btn-ghost" id="new-fan-group-btn">+ Fan Group</button>
           </div>
         </div>
         <p style="font-size:12px; color:var(--text-dim); margin-bottom:14px;">
@@ -220,8 +220,8 @@
         <div class="source-sensor-list" id="vs-source-list"></div>
       </div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeVirtualSensorModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveVirtualSensor()">Save</button>
+        <button class="btn btn-ghost" id="cancel-vsensor-btn">Cancel</button>
+        <button class="btn btn-primary" id="save-vsensor-btn">Save</button>
       </div>
     </div>
   </div>
@@ -241,8 +241,8 @@
         <div class="group-item-list" id="group-item-list"></div>
       </div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeGroupModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveGroup()">Save</button>
+        <button class="btn btn-ghost" id="cancel-group-btn">Cancel</button>
+        <button class="btn btn-primary" id="save-group-btn">Save</button>
       </div>
     </div>
   </div>
@@ -276,17 +276,53 @@
     }
 
     /* ── Color picker helper ──────────────────────────── */
-    function colorPickerHTML(itemId) {
+    function colorPickerElement(itemId) {
       const current = (appConfig.card_colors || {})[itemId] || '';
-      return `
-        <div class="color-picker-row">
-          <span class="color-dot ${!current ? 'selected' : ''}" data-color=""
-            onclick="setCardColor('${itemId.replace(/'/g, "\\'")}', '')" title="None"></span>
-          ${CARD_COLORS.map(c => `
-            <span class="color-dot ${current === c ? 'selected' : ''}" data-color="${c}"
-              onclick="setCardColor('${itemId.replace(/'/g, "\\'")}', '${c}')" title="${c}"></span>
-          `).join('')}
-        </div>`;
+      const picker = document.createElement('div');
+      picker.className = 'color-picker-row';
+      ['', ...CARD_COLORS].forEach(color => {
+        const dot = document.createElement('button');
+        dot.type = 'button';
+        dot.className = 'color-dot';
+        dot.classList.toggle('selected', current === color);
+        dot.dataset.color = color;
+        dot.title = color || 'None';
+        dot.setAttribute('aria-label', color ? `Set color ${color}` : 'Remove color');
+        dot.addEventListener('click', () => setCardColor(itemId, color));
+        picker.appendChild(dot);
+      });
+      return picker;
+    }
+
+    function appendTextCell(row, text, className = '', style = '') {
+      const cell = document.createElement('td');
+      const span = document.createElement('span');
+      if (className) span.className = className;
+      if (style) span.style.cssText = style;
+      span.textContent = text;
+      cell.appendChild(span);
+      row.appendChild(cell);
+      return cell;
+    }
+
+    function showEmptyTable(tbody, columns, message, centered = false) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = columns;
+      cell.style.cssText = `color:var(--text-muted);padding:20px${centered ? ';text-align:center' : ''}`;
+      cell.textContent = message;
+      row.appendChild(cell);
+      tbody.replaceChildren(row);
+    }
+
+    function actionButton(text, className, action, style = '') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.style.cssText = style;
+      button.textContent = text;
+      button.addEventListener('click', action);
+      return button;
     }
 
     async function setCardColor(itemId, color) {
@@ -312,32 +348,44 @@
     function renderSensors(sensors) {
       const tbody = document.getElementById('sensors-tbody');
       if (!sensors.length) {
-        tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted);padding:20px">No sensors detected</td></tr>';
+        showEmptyTable(tbody, 4, 'No sensors detected');
         return;
       }
-      tbody.innerHTML = sensors.map(s => {
+      const rows = sensors.map(s => {
         const alias = s.alias;
         const displayLabel = alias || s.label;
-        return `
-          <tr id="row-${CSS.escape(s.id)}">
-            <td>
-              <div class="alias-cell" id="cell-${CSS.escape(s.id)}">
-                <div class="alias-display">
-                  <span class="alias-name">${displayLabel}</span>
-                  <span class="alias-id">${s.id}</span>
-                </div>
-                <button class="edit-btn" onclick="startEdit('${s.id.replace(/'/g, "\\'")}')" title="Set alias">✎</button>
-              </div>
-            </td>
-            <td><span class="badge badge-dim">${s.driver}</span></td>
-            <td>${colorPickerHTML(s.id)}</td>
-            <td style="text-align:right">
-              <span class="mono" style="color:var(--accent)">${fmtTemp(s.current_temp)}</span>
-              <span style="color:var(--text-muted);font-size:11px"> °C</span>
-            </td>
-          </tr>
-        `;
-      }).join('');
+        const row = document.createElement('tr');
+        const aliasTd = document.createElement('td');
+        const aliasCell = document.createElement('div');
+        aliasCell.className = 'alias-cell';
+        aliasCell.id = 'cell-' + s.id;
+        const display = document.createElement('div');
+        display.className = 'alias-display';
+        const name = document.createElement('span');
+        name.className = 'alias-name';
+        name.textContent = displayLabel;
+        const id = document.createElement('span');
+        id.className = 'alias-id';
+        id.textContent = s.id;
+        display.append(name, id);
+        const edit = actionButton('✎', 'edit-btn', () => startEdit(s.id));
+        edit.title = 'Set alias';
+        aliasCell.append(display, edit);
+        aliasTd.appendChild(aliasCell);
+        row.appendChild(aliasTd);
+        appendTextCell(row, s.driver, 'badge badge-dim');
+        const colorCell = document.createElement('td');
+        colorCell.appendChild(colorPickerElement(s.id));
+        row.appendChild(colorCell);
+        const tempCell = appendTextCell(row, fmtTemp(s.current_temp), 'mono', 'color:var(--accent)');
+        tempCell.style.textAlign = 'right';
+        const unit = document.createElement('span');
+        unit.style.cssText = 'color:var(--text-muted);font-size:11px';
+        unit.textContent = ' °C';
+        tempCell.appendChild(unit);
+        return row;
+      });
+      tbody.replaceChildren(...rows);
     }
 
     function startEdit(sensorId) {
@@ -345,24 +393,23 @@
       if (editingId) cancelEdit(editingId);
 
       editingId = sensorId;
-      const cell = document.getElementById('cell-' + CSS.escape(sensorId));
+      const cell = document.getElementById('cell-' + sensorId);
       if (!cell) return;
 
       const currentAlias = appConfig.sensor_aliases?.[sensorId] || '';
-      cell.innerHTML = `
-        <div class="alias-edit-wrap">
-          <input class="alias-input" id="alias-input-${CSS.escape(sensorId)}"
-            value="${currentAlias}"
-            placeholder="Enter alias…"
-            onkeydown="handleAliasKey(event, '${sensorId.replace(/'/g, "\\'")}')"
-          />
-          <button class="btn btn-primary" style="padding:4px 10px;font-size:12px"
-            onclick="saveAlias('${sensorId.replace(/'/g, "\\'")}')">Save</button>
-          <button class="btn btn-ghost" style="padding:4px 10px;font-size:12px"
-            onclick="cancelEdit('${sensorId.replace(/'/g, "\\'")}')">✕</button>
-        </div>
-      `;
-      document.getElementById('alias-input-' + CSS.escape(sensorId))?.focus();
+      const wrap = document.createElement('div');
+      wrap.className = 'alias-edit-wrap';
+      const input = document.createElement('input');
+      input.className = 'alias-input';
+      input.id = 'alias-input-' + sensorId;
+      input.value = currentAlias;
+      input.placeholder = 'Enter alias…';
+      input.addEventListener('keydown', event => handleAliasKey(event, sensorId));
+      const save = actionButton('Save', 'btn btn-primary', () => saveAlias(sensorId), 'padding:4px 10px;font-size:12px');
+      const cancel = actionButton('✕', 'btn btn-ghost', () => cancelEdit(sensorId), 'padding:4px 10px;font-size:12px');
+      wrap.append(input, save, cancel);
+      cell.replaceChildren(wrap);
+      input.focus();
     }
 
     function cancelEdit(sensorId) {
@@ -376,7 +423,7 @@
     }
 
     async function saveAlias(sensorId) {
-      const input = document.getElementById('alias-input-' + CSS.escape(sensorId));
+      const input = document.getElementById('alias-input-' + sensorId);
       if (!input) return;
       const value = input.value.trim();
 
@@ -403,9 +450,7 @@
     function renderVirtualSensors(vsensors) {
       const tbody = document.getElementById('vsensors-tbody');
       if (!vsensors.length) {
-        tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-muted);padding:20px;text-align:center">
-          No virtual sensors defined. Click <strong>+ New Virtual Sensor</strong> to create one.
-        </td></tr>`;
+        showEmptyTable(tbody, 6, 'No virtual sensors defined. Click + New Virtual Sensor to create one.', true);
         return;
       }
 
@@ -414,53 +459,60 @@
         sensorLookup[s.id] = s.alias || s.label;
       });
 
-      tbody.innerHTML = vsensors.map((vs, i) => {
+      const rows = vsensors.map((vs, i) => {
         const sourceNames = vs.source_sensor_ids
-          .map(sid => escapeHtml(
-            sensorLookup[sid] || `Missing sensor — ${appConfig.sensor_aliases?.[sid] || sid}`
-          ))
+          .map(sid => sensorLookup[sid] || `Missing sensor — ${appConfig.sensor_aliases?.[sid] || sid}`)
           .join(', ');
         const aggLabel = vs.aggregation === 'avg' ? 'Average'
                        : vs.aggregation === 'max' ? 'Maximum' : 'Minimum';
-        return `
-          <tr>
-            <td>${vs.label}</td>
-            <td><span class="badge badge-dim">${aggLabel}</span></td>
-            <td><span style="font-size:12px;color:var(--text-dim)">${sourceNames}</span></td>
-            <td>${colorPickerHTML(vs.id)}</td>
-            <td style="text-align:right">
-              <span class="mono" style="color:var(--accent)">${fmtTemp(vs.current_temp)}</span>
-              <span style="color:var(--text-muted);font-size:11px"> °C</span>
-            </td>
-            <td style="text-align:right">
-              <button class="btn btn-ghost" style="padding:5px 10px;font-size:12px;margin-right:6px"
-                onclick="openEditVirtualSensor(${i})">Edit</button>
-              <button class="btn btn-danger-ghost" style="padding:5px 10px;font-size:12px"
-                onclick="deleteVirtualSensor(${i})">Delete</button>
-            </td>
-          </tr>
-        `;
-      }).join('');
+        const row = document.createElement('tr');
+        appendTextCell(row, vs.label);
+        appendTextCell(row, aggLabel, 'badge badge-dim');
+        appendTextCell(row, sourceNames, '', 'font-size:12px;color:var(--text-dim)');
+        const colorCell = document.createElement('td');
+        colorCell.appendChild(colorPickerElement(vs.id));
+        row.appendChild(colorCell);
+        const tempCell = appendTextCell(row, fmtTemp(vs.current_temp), 'mono', 'color:var(--accent)');
+        tempCell.style.textAlign = 'right';
+        const unit = document.createElement('span');
+        unit.style.cssText = 'color:var(--text-muted);font-size:11px';
+        unit.textContent = ' °C';
+        tempCell.appendChild(unit);
+        const actions = document.createElement('td');
+        actions.style.textAlign = 'right';
+        actions.append(
+          actionButton('Edit', 'btn btn-ghost', () => openEditVirtualSensor(i), 'padding:5px 10px;font-size:12px;margin-right:6px'),
+          actionButton('Delete', 'btn btn-danger-ghost', () => deleteVirtualSensor(i), 'padding:5px 10px;font-size:12px')
+        );
+        row.appendChild(actions);
+        return row;
+      });
+      tbody.replaceChildren(...rows);
     }
 
     /* ── Render Fans ──────────────────────────────────── */
     function renderFans(fans) {
       const tbody = document.getElementById('fans-tbody');
       if (!fans.length) {
-        tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted);padding:20px">No fan channels detected</td></tr>';
+        showEmptyTable(tbody, 4, 'No fan channels detected');
         return;
       }
-      tbody.innerHTML = fans.map(f => `
-        <tr>
-          <td>${f.label}</td>
-          <td><span class="mono" style="font-size:12px;color:var(--text-dim)">${f.id}</span></td>
-          <td>${colorPickerHTML(f.id)}</td>
-          <td style="text-align:right">
-            <span class="mono" style="color:var(--accent)">${fmtRpm(f.current_rpm)}</span>
-            <span style="color:var(--text-muted);font-size:11px"> rpm</span>
-          </td>
-        </tr>
-      `).join('');
+      const rows = fans.map(f => {
+        const row = document.createElement('tr');
+        appendTextCell(row, f.label);
+        appendTextCell(row, f.id, 'mono', 'font-size:12px;color:var(--text-dim)');
+        const colorCell = document.createElement('td');
+        colorCell.appendChild(colorPickerElement(f.id));
+        row.appendChild(colorCell);
+        const rpmCell = appendTextCell(row, fmtRpm(f.current_rpm), 'mono', 'color:var(--accent)');
+        rpmCell.style.textAlign = 'right';
+        const unit = document.createElement('span');
+        unit.style.cssText = 'color:var(--text-muted);font-size:11px';
+        unit.textContent = ' rpm';
+        rpmCell.appendChild(unit);
+        return row;
+      });
+      tbody.replaceChildren(...rows);
     }
 
     /* ── Render Dashboard Groups ──────────────────────── */
@@ -469,35 +521,50 @@
       const groups = appConfig.dashboard_groups || [];
 
       if (!groups.length) {
-        container.innerHTML = `<div style="color:var(--text-muted); padding:24px; text-align:center; font-size:13px; border:1px dashed var(--border); border-radius:var(--radius-lg);">
-          No groups defined. All configured fans and sensors will appear under "Other" on the dashboard.
-        </div>`;
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:var(--text-muted);padding:24px;text-align:center;font-size:13px;border:1px dashed var(--border);border-radius:var(--radius-lg)';
+        empty.textContent = 'No groups defined. All configured fans and sensors will appear under "Other" on the dashboard.';
+        container.replaceChildren(empty);
         return;
       }
 
-      container.innerHTML = groups.map((grp, i) => {
+      const cards = groups.map((grp, i) => {
         const typeLabel = grp.type === 'sensor' ? 'Sensors' : 'Fans';
         const itemNames = grp.item_ids.map(id => itemDisplayName(id, grp.type)).join(', ');
-        return `
-          <div class="group-card">
-            <div class="group-card-header">
-              <div class="group-card-title">
-                ${grp.name}
-                <span class="group-card-type">${typeLabel}</span>
-              </div>
-              <div style="display:flex; align-items:center; gap:4px;">
-                <button class="group-move-btn" onclick="moveGroup(${i}, -1)" ${i === 0 ? 'disabled' : ''} title="Move up">▲</button>
-                <button class="group-move-btn" onclick="moveGroup(${i}, 1)" ${i === groups.length - 1 ? 'disabled' : ''} title="Move down">▼</button>
-                <button class="btn btn-ghost" style="padding:4px 10px;font-size:12px;margin-left:8px"
-                  onclick="openEditGroup(${i})">Edit</button>
-                <button class="btn btn-danger-ghost" style="padding:4px 10px;font-size:12px"
-                  onclick="deleteGroup(${i})">Delete</button>
-              </div>
-            </div>
-            <div class="group-card-items">${itemNames || '<span style="color:var(--text-muted)">No items</span>'}</div>
-          </div>
-        `;
-      }).join('');
+        const card = document.createElement('div');
+        card.className = 'group-card';
+        const header = document.createElement('div');
+        header.className = 'group-card-header';
+        const title = document.createElement('div');
+        title.className = 'group-card-title';
+        title.append(document.createTextNode(grp.name));
+        const type = document.createElement('span');
+        type.className = 'group-card-type';
+        type.textContent = typeLabel;
+        title.appendChild(type);
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;align-items:center;gap:4px';
+        const up = actionButton('▲', 'group-move-btn', () => moveGroup(i, -1));
+        up.disabled = i === 0;
+        up.title = 'Move up';
+        const down = actionButton('▼', 'group-move-btn', () => moveGroup(i, 1));
+        down.disabled = i === groups.length - 1;
+        down.title = 'Move down';
+        actions.append(
+          up,
+          down,
+          actionButton('Edit', 'btn btn-ghost', () => openEditGroup(i), 'padding:4px 10px;font-size:12px;margin-left:8px'),
+          actionButton('Delete', 'btn btn-danger-ghost', () => deleteGroup(i), 'padding:4px 10px;font-size:12px')
+        );
+        header.append(title, actions);
+        const items = document.createElement('div');
+        items.className = 'group-card-items';
+        items.textContent = itemNames || 'No items';
+        if (!itemNames) items.style.color = 'var(--text-muted)';
+        card.append(header, items);
+        return card;
+      });
+      container.replaceChildren(...cards);
     }
 
     function itemDisplayName(id, type) {
@@ -563,41 +630,51 @@
         ];
 
         if (!items.length) {
-          list.innerHTML = '<div style="color:var(--text-muted);padding:12px;font-size:13px">No sensors available</div>';
+          showEmptyList(list, 'No sensors available');
           return;
         }
 
-        list.innerHTML = items.map(item => {
-          const checked = selectedIds.includes(item.id) ? 'checked' : '';
-          return `
-            <label class="group-item-option">
-              <input type="checkbox" value="${item.id}" ${checked} />
-              <div>
-                <div style="color:var(--text)">${item.label}</div>
-                <div style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono)">${item.sub}</div>
-              </div>
-            </label>`;
-        }).join('');
+        list.replaceChildren(...items.map(item => checkboxOption(
+          'group-item-option', item.id, item.label, item.sub, selectedIds.includes(item.id)
+        )));
 
       } else {
         const fans = devices.fans || [];
         if (!fans.length) {
-          list.innerHTML = '<div style="color:var(--text-muted);padding:12px;font-size:13px">No fans available</div>';
+          showEmptyList(list, 'No fans available');
           return;
         }
 
-        list.innerHTML = fans.map(f => {
-          const checked = selectedIds.includes(f.id) ? 'checked' : '';
-          return `
-            <label class="group-item-option">
-              <input type="checkbox" value="${f.id}" ${checked} />
-              <div>
-                <div style="color:var(--text)">${f.label}</div>
-                <div style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono)">${f.id}</div>
-              </div>
-            </label>`;
-        }).join('');
+        list.replaceChildren(...fans.map(f => checkboxOption(
+          'group-item-option', f.id, f.label, f.id, selectedIds.includes(f.id)
+        )));
       }
+    }
+
+    function showEmptyList(list, message) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'color:var(--text-muted);padding:12px;font-size:13px';
+      empty.textContent = message;
+      list.replaceChildren(empty);
+    }
+
+    function checkboxOption(className, value, labelText, subText, checked) {
+      const label = document.createElement('label');
+      label.className = className;
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = value;
+      checkbox.checked = checked;
+      const copy = document.createElement('div');
+      const name = document.createElement('div');
+      name.style.color = 'var(--text)';
+      name.textContent = labelText;
+      const sub = document.createElement('div');
+      sub.style.cssText = 'font-size:11px;color:var(--text-muted);font-family:var(--font-mono)';
+      sub.textContent = subText;
+      copy.append(name, sub);
+      label.append(checkbox, copy);
+      return label;
     }
 
     function generateGroupId(name) {
@@ -705,28 +782,38 @@
         appConfig
       );
       if (!choices.length) {
-        list.innerHTML = '<div style="color:var(--text-muted);padding:12px;font-size:13px">No physical sensors detected or configured</div>';
+        showEmptyList(list, 'No physical sensors detected or configured');
         return;
       }
-      list.innerHTML = choices.map(sensor => {
-        const checked = selectedIds.includes(sensor.id) ? 'checked' : '';
-        const unavailableClass = sensor.unavailable ? ' unavailable' : '';
-        const badge = sensor.unavailable
-          ? '<span class="badge badge-warn">Unavailable</span>'
-          : '';
-        return `
-          <label class="source-sensor-item${unavailableClass}">
-            <input type="checkbox" value="${escapeHtml(sensor.id)}" ${checked} />
-            <div>
-              <div class="sensor-label-row">
-                <span class="sensor-label">${sensor.unavailable ? 'Missing sensor — ' : ''}${escapeHtml(sensor.label)}</span>
-                ${badge}
-              </div>
-              <div class="sensor-id">${escapeHtml(sensor.id)}</div>
-            </div>
-          </label>
-        `;
-      }).join('');
+      const options = choices.map(sensor => {
+        const label = document.createElement('label');
+        label.className = 'source-sensor-item';
+        label.classList.toggle('unavailable', sensor.unavailable);
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = sensor.id;
+        checkbox.checked = selectedIds.includes(sensor.id);
+        const copy = document.createElement('div');
+        const labelRow = document.createElement('div');
+        labelRow.className = 'sensor-label-row';
+        const sensorLabel = document.createElement('span');
+        sensorLabel.className = 'sensor-label';
+        sensorLabel.textContent = `${sensor.unavailable ? 'Missing sensor — ' : ''}${sensor.label}`;
+        labelRow.appendChild(sensorLabel);
+        if (sensor.unavailable) {
+          const badge = document.createElement('span');
+          badge.className = 'badge badge-warn';
+          badge.textContent = 'Unavailable';
+          labelRow.appendChild(badge);
+        }
+        const id = document.createElement('div');
+        id.className = 'sensor-id';
+        id.textContent = sensor.id;
+        copy.append(labelRow, id);
+        label.append(checkbox, copy);
+        return label;
+      });
+      list.replaceChildren(...options);
     }
 
     function getSelectedSourceSensors() {
@@ -811,6 +898,14 @@
       }
     }
 
+    document.getElementById('refresh-btn').addEventListener('click', loadDevices);
+    document.getElementById('new-vsensor-btn').addEventListener('click', openVirtualSensorModal);
+    document.getElementById('new-sensor-group-btn').addEventListener('click', () => openGroupModal('sensor'));
+    document.getElementById('new-fan-group-btn').addEventListener('click', () => openGroupModal('fan'));
+    document.getElementById('cancel-vsensor-btn').addEventListener('click', closeVirtualSensorModal);
+    document.getElementById('save-vsensor-btn').addEventListener('click', saveVirtualSensor);
+    document.getElementById('cancel-group-btn').addEventListener('click', closeGroupModal);
+    document.getElementById('save-group-btn').addEventListener('click', saveGroup);
     loadDevices();
   </script>
 </body>

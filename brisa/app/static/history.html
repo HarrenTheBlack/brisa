@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Brisa — History</title>
   <link rel="stylesheet" href="/style.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+    integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g"
+    crossorigin="anonymous"></script>
   <style>
     .range-btns { display: flex; gap: 6px; }
     .range-btn {
@@ -30,10 +32,10 @@
             <p class="page-subtitle">Temperature and fan speed over time</p>
           </div>
           <div class="range-btns">
-            <button class="range-btn" onclick="setRange(1)">1h</button>
-            <button class="range-btn" onclick="setRange(6)">6h</button>
-            <button class="range-btn active" onclick="setRange(24)">24h</button>
-            <button class="range-btn" onclick="setRange(168)">7d</button>
+            <button class="range-btn" data-hours="1">1h</button>
+            <button class="range-btn" data-hours="6">6h</button>
+            <button class="range-btn active" data-hours="24">24h</button>
+            <button class="range-btn" data-hours="168">7d</button>
           </div>
         </div>
       </div>
@@ -198,6 +200,9 @@
       });
     }
 
+    document.querySelectorAll('.range-btn').forEach(button => {
+      button.addEventListener('click', () => setRange(Number(button.dataset.hours)));
+    });
     loadHistory();
   </script>
 </body>

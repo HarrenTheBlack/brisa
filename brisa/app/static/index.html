@@ -16,7 +16,7 @@
             <h1 class="page-title"><span class="live-dot"></span>Dashboard</h1>
             <p class="page-subtitle" id="last-updated">Fetching…</p>
           </div>
-          <button class="btn btn-ghost" onclick="applyNow()" id="apply-btn">
+          <button class="btn btn-ghost" id="apply-btn">
             ▶ Apply Now
           </button>
         </div>
@@ -56,145 +56,178 @@
       const hasUngroupedFans = data.ungrouped_fans && data.ungrouped_fans.length;
       const hasUngroupedSensors = data.ungrouped_sensors && data.ungrouped_sensors.length;
       const hasAnything = hasFanGroups || hasSensorGroups || hasUngroupedFans || hasUngroupedSensors;
+      container.replaceChildren();
 
       if (!hasAnything) {
-        container.innerHTML = `
-          <div class="empty-state">
-            <div style="font-size:32px;margin-bottom:8px">〜</div>
-            <p>No fans or sensors to display.</p>
-            <p style="margin-top:8px">Configure fans in <a href="/fanconfig.html" style="color:var(--accent)">Fan Config</a>
-            or set up dashboard groups in <a href="/devices.html" style="color:var(--accent)">Sensors & Fans</a>.</p>
-          </div>`;
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        const mark = document.createElement('div');
+        mark.style.cssText = 'font-size:32px;margin-bottom:8px';
+        mark.textContent = '〜';
+        const message = document.createElement('p');
+        message.textContent = 'No fans or sensors to display.';
+        const guidance = document.createElement('p');
+        guidance.style.marginTop = '8px';
+        guidance.append('Configure fans in ');
+        const fanLink = document.createElement('a');
+        fanLink.href = '/fanconfig.html';
+        fanLink.style.color = 'var(--accent)';
+        fanLink.textContent = 'Fan Config';
+        guidance.append(fanLink, ' or set up dashboard groups in ');
+        const deviceLink = document.createElement('a');
+        deviceLink.href = '/devices.html';
+        deviceLink.style.color = 'var(--accent)';
+        deviceLink.textContent = 'Sensors & Fans';
+        guidance.append(deviceLink, '.');
+        empty.append(mark, message, guidance);
+        container.appendChild(empty);
         return;
       }
 
-      let html = '';
-
-      // Fan groups
       if (hasFanGroups || hasUngroupedFans) {
-        html += `
-          <div class="dash-category">
-            <div class="dash-category-header">
-              <span class="dash-category-title">Fan Speeds</span>
-              <div class="dash-category-line"></div>
-            </div>`;
+        const category = createCategory('Fan Speeds');
 
         for (const grp of (data.fan_groups || [])) {
-          html += renderFanGroup(grp);
+          const group = renderGroup(grp, fanCardElement);
+          if (group) category.appendChild(group);
         }
 
         if (hasUngroupedFans) {
-          if (hasFanGroups) {
-            html += `
-              <div class="dash-group">
-                <div class="dash-group-header">
-                  <div class="dash-group-accent" style="background:var(--text-muted)"></div>
-                  <span class="dash-group-title" style="color:var(--text-dim)">Other</span>
-                </div>
-                <div class="grid-4">${data.ungrouped_fans.map(f => fanCardHTML(f)).join('')}</div>
-              </div>`;
-          } else {
-            html += `<div class="grid-4">${data.ungrouped_fans.map(f => fanCardHTML(f)).join('')}</div>`;
-          }
+          category.appendChild(hasFanGroups
+            ? createGroup('Other', data.ungrouped_fans, fanCardElement, true)
+            : createCardGrid(data.ungrouped_fans, fanCardElement));
         }
-
-        html += '</div>';
+        container.appendChild(category);
       }
 
-      // Sensor groups
       if (hasSensorGroups || hasUngroupedSensors) {
-        html += `
-          <div class="dash-category">
-            <div class="dash-category-header">
-              <span class="dash-category-title">Temperatures</span>
-              <div class="dash-category-line"></div>
-            </div>`;
+        const category = createCategory('Temperatures');
 
         for (const grp of (data.sensor_groups || [])) {
-          html += renderSensorGroup(grp);
+          const group = renderGroup(grp, sensorCardElement);
+          if (group) category.appendChild(group);
         }
 
         if (hasUngroupedSensors) {
-          if (hasSensorGroups) {
-            html += `
-              <div class="dash-group">
-                <div class="dash-group-header">
-                  <div class="dash-group-accent" style="background:var(--text-muted)"></div>
-                  <span class="dash-group-title" style="color:var(--text-dim)">Other</span>
-                </div>
-                <div class="grid-4">${data.ungrouped_sensors.map(s => sensorCardHTML(s)).join('')}</div>
-              </div>`;
-          } else {
-            html += `<div class="grid-4">${data.ungrouped_sensors.map(s => sensorCardHTML(s)).join('')}</div>`;
-          }
+          category.appendChild(hasSensorGroups
+            ? createGroup('Other', data.ungrouped_sensors, sensorCardElement, true)
+            : createCardGrid(data.ungrouped_sensors, sensorCardElement));
         }
-
-        html += '</div>';
+        container.appendChild(category);
       }
-
-      container.innerHTML = html;
       updateValues(data);
     }
 
-    function renderFanGroup(grp) {
-      if (!grp.items.length) return '';
-      return `
-        <div class="dash-group">
-          <div class="dash-group-header">
-            <div class="dash-group-accent"></div>
-            <span class="dash-group-title">${grp.name}</span>
-          </div>
-          <div class="grid-4">${grp.items.map(f => fanCardHTML(f)).join('')}</div>
-        </div>`;
+    function createCategory(titleText) {
+      const category = document.createElement('div');
+      category.className = 'dash-category';
+      const header = document.createElement('div');
+      header.className = 'dash-category-header';
+      const title = document.createElement('span');
+      title.className = 'dash-category-title';
+      title.textContent = titleText;
+      const line = document.createElement('div');
+      line.className = 'dash-category-line';
+      header.append(title, line);
+      category.appendChild(header);
+      return category;
     }
 
-    function renderSensorGroup(grp) {
-      if (!grp.items.length) return '';
-      return `
-        <div class="dash-group">
-          <div class="dash-group-header">
-            <div class="dash-group-accent"></div>
-            <span class="dash-group-title">${grp.name}</span>
-          </div>
-          <div class="grid-4">${grp.items.map(s => sensorCardHTML(s)).join('')}</div>
-        </div>`;
+    function createCardGrid(items, cardFactory) {
+      const grid = document.createElement('div');
+      grid.className = 'grid-4';
+      items.forEach(item => grid.appendChild(cardFactory(item)));
+      return grid;
     }
 
-    function fanCardHTML(fan) {
+    function createGroup(name, items, cardFactory, muted = false) {
+      const group = document.createElement('div');
+      group.className = 'dash-group';
+      const header = document.createElement('div');
+      header.className = 'dash-group-header';
+      const accent = document.createElement('div');
+      accent.className = 'dash-group-accent';
+      const title = document.createElement('span');
+      title.className = 'dash-group-title';
+      title.textContent = name;
+      if (muted) {
+        accent.style.background = 'var(--text-muted)';
+        title.style.color = 'var(--text-dim)';
+      }
+      header.append(accent, title);
+      group.append(header, createCardGrid(items, cardFactory));
+      return group;
+    }
+
+    function renderGroup(group, cardFactory) {
+      return group.items.length ? createGroup(group.name, group.items, cardFactory) : null;
+    }
+
+    function fanCardElement(fan) {
       const cid = cardId('fan-card-', fan.id);
-      const colorAttr = fan.color ? ` data-color="${fan.color}"` : '';
-      return `
-        <div class="stat-card" id="${cid}"${colorAttr}>
-          <div class="stat-label">
-            ${fan.label || fan.id}
-            ${fan.override_percent != null ? '<span class="badge badge-warn" style="margin-left:6px;font-size:10px">MANUAL</span>' : ''}
-          </div>
-          <div style="display:flex; align-items:baseline; justify-content:space-between;">
-            <div>
-              <span class="stat-value" id="val-${cid}">—</span>
-              <span class="stat-unit">rpm</span>
-            </div>
-            <span class="mono" style="font-size:12px; color:var(--text-muted);" id="pct-${cid}"></span>
-          </div>
-        </div>`;
+      const card = document.createElement('div');
+      card.className = 'stat-card';
+      card.id = cid;
+      if (fan.color) card.dataset.color = fan.color;
+      const label = document.createElement('div');
+      label.className = 'stat-label';
+      label.textContent = fan.label || fan.id;
+      if (fan.override_percent != null) {
+        const badge = document.createElement('span');
+        badge.className = 'badge badge-warn';
+        badge.style.cssText = 'margin-left:6px;font-size:10px';
+        badge.textContent = 'MANUAL';
+        label.appendChild(badge);
+      }
+      const values = document.createElement('div');
+      values.style.cssText = 'display:flex;align-items:baseline;justify-content:space-between';
+      const rpm = document.createElement('div');
+      const value = document.createElement('span');
+      value.className = 'stat-value';
+      value.id = 'val-' + cid;
+      value.textContent = '—';
+      const unit = document.createElement('span');
+      unit.className = 'stat-unit';
+      unit.textContent = 'rpm';
+      rpm.append(value, unit);
+      const percent = document.createElement('span');
+      percent.className = 'mono';
+      percent.style.cssText = 'font-size:12px;color:var(--text-muted)';
+      percent.id = 'pct-' + cid;
+      values.append(rpm, percent);
+      card.append(label, values);
+      return card;
     }
 
-    function sensorCardHTML(s) {
+    function sensorCardElement(s) {
       const cid = cardId('temp-card-', s.sensor_id);
       const label = s.alias || s.sensor_id.split('/').pop();
-      const isVirtual = s.virtual === true;
-      const colorAttr = s.color ? ` data-color="${s.color}"` : '';
-      return `
-        <div class="stat-card" id="${cid}"${colorAttr}>
-          <div class="stat-label" title="${s.sensor_id}">
-            ${label}
-            ${isVirtual ? '<span class="badge badge-dim" style="margin-left:6px;font-size:10px">VIRTUAL</span>' : ''}
-          </div>
-          <div>
-            <span class="stat-value" id="val-${cid}">—</span>
-            <span class="stat-unit">°C</span>
-          </div>
-        </div>`;
+      const card = document.createElement('div');
+      card.className = 'stat-card';
+      card.id = cid;
+      if (s.color) card.dataset.color = s.color;
+      const labelElement = document.createElement('div');
+      labelElement.className = 'stat-label';
+      labelElement.title = s.sensor_id;
+      labelElement.textContent = label;
+      if (s.virtual === true) {
+        const badge = document.createElement('span');
+        badge.className = 'badge badge-dim';
+        badge.style.cssText = 'margin-left:6px;font-size:10px';
+        badge.textContent = 'VIRTUAL';
+        labelElement.appendChild(badge);
+      }
+      const values = document.createElement('div');
+      const value = document.createElement('span');
+      value.className = 'stat-value';
+      value.id = 'val-' + cid;
+      value.textContent = '—';
+      const unit = document.createElement('span');
+      unit.className = 'stat-unit';
+      unit.textContent = '°C';
+      values.append(value, unit);
+      card.append(labelElement, values);
+      return card;
     }
 
     function updateValues(data) {
@@ -239,6 +272,7 @@
       }
     }
 
+    document.getElementById('apply-btn').addEventListener('click', applyNow);
     loadState();
     setInterval(loadState, 10000);
   </script>
