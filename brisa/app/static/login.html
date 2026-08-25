@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Brisa — Sign in</title>
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    body.login-page {
+      min-height: 100vh;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background:
+        radial-gradient(circle at 50% 15%, #00d4aa12, transparent 36rem),
+        var(--bg);
+    }
+    .login-shell { width: min(100%, 390px); }
+    .login-brand {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .login-logo { width: 56px; height: 56px; object-fit: contain; }
+    .login-wordmark {
+      font-family: var(--font-mono);
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.7px;
+    }
+    .login-wordmark span { color: var(--accent); }
+    .login-card { padding: 28px; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22); }
+    .login-title { margin-bottom: 5px; font-size: 18px; }
+    .login-intro { margin-bottom: 24px; color: var(--text-dim); font-size: 12px; }
+    .login-submit { width: 100%; justify-content: center; margin-top: 4px; }
+    .login-submit:disabled { cursor: wait; opacity: 0.55; }
+    .login-error {
+      min-height: 20px;
+      margin: 2px 0 10px;
+      color: var(--danger);
+      font-size: 12px;
+    }
+    @media (max-width: 480px) {
+      body.login-page { align-items: flex-start; padding-top: 12vh; }
+      .login-card { padding: 24px 20px; }
+    }
+  </style>
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <div class="login-brand" aria-label="Brisa">
+      <img class="login-logo" src="/logo.png" alt="">
+      <div class="login-wordmark">bri<span>sa</span></div>
+    </div>
+    <section class="card login-card" aria-labelledby="login-title">
+      <h1 class="login-title" id="login-title">Sign in</h1>
+      <p class="login-intro">Use your management interface credentials.</p>
+      <form id="login-form" novalidate>
+        <div class="form-group">
+          <label class="form-label" for="username">Username</label>
+          <input class="form-input" id="username" name="username" type="text"
+            autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="password">Password</label>
+          <input class="form-input" id="password" name="password" type="password"
+            autocomplete="current-password" required>
+        </div>
+        <p class="login-error" id="login-error" role="alert" aria-live="polite"></p>
+        <button class="btn btn-primary login-submit" id="login-submit" type="submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+  <script src="/login.js"></script>
+</body>
+</html>

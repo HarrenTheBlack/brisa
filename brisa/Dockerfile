@@ -1,7 +1,7 @@
 # ── Stage 1: build ──────────────────────────────────────────────────────────
 # Install build tools and compile all Python dependencies.
 # This stage is discarded after the final image is assembled.
-FROM python:3.12.9-slim AS builder
+FROM python:3.12.13-slim AS builder
 
 WORKDIR /build
 
@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ── Stage 2: final ──────────────────────────────────────────────────────────
 # Clean base image — no build tools, just runtime deps and app code.
-FROM python:3.12.9-slim
+FROM python:3.12.13-slim
 
 WORKDIR /app
 
@@ -39,4 +39,4 @@ RUN mkdir -p /data
 
 EXPOSE 9595
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9595"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9595", "--no-proxy-headers", "--workers", "1", "--limit-concurrency", "64"]

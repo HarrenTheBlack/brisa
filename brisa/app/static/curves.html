@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Brisa — Curves</title>
   <link rel="stylesheet" href="/style.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+    integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g"
+    crossorigin="anonymous"></script>
   <style>
     .curve-card { margin-bottom: 20px; }
     .curve-header {
@@ -80,9 +82,9 @@
             <span class="unsaved-badge" id="unsaved-badge">● unsaved changes</span>
           </div>
           <div style="display:flex; gap:8px;">
-            <button class="btn btn-ghost" id="discard-btn" onclick="discardChanges()" style="display:none">Discard</button>
-            <button class="btn btn-primary" id="save-btn" onclick="saveConfig()" style="display:none">Save</button>
-            <button class="btn btn-ghost" onclick="openNewCurveModal()">+ New Curve</button>
+            <button class="btn btn-ghost" id="discard-btn" style="display:none">Discard</button>
+            <button class="btn btn-primary" id="save-btn" style="display:none">Save</button>
+            <button class="btn btn-ghost" id="new-curve-btn">+ New Curve</button>
           </div>
         </div>
         <p class="page-subtitle">Define temperature → fan speed relationships</p>
@@ -103,8 +105,8 @@
         <input class="form-input" id="new-curve-name" placeholder="e.g. silent, aggressive" />
       </div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeNewCurveModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="createCurve()">Create</button>
+        <button class="btn btn-ghost" id="cancel-new-curve-btn">Cancel</button>
+        <button class="btn btn-primary" id="create-curve-btn">Create</button>
       </div>
     </div>
   </div>
@@ -115,8 +117,8 @@
       <div class="modal-title">Delete Curve</div>
       <p id="delete-modal-body" style="font-size:13px; color:var(--text-dim); line-height:1.6"></p>
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeDeleteModal()">Cancel</button>
-        <button class="btn btn-danger-ghost" id="delete-confirm-btn" onclick="confirmDelete()" style="border-color:var(--danger);color:var(--danger)">Delete</button>
+        <button class="btn btn-ghost" id="cancel-delete-btn">Cancel</button>
+        <button class="btn btn-danger-ghost" id="delete-confirm-btn" style="border-color:var(--danger);color:var(--danger)">Delete</button>
       </div>
     </div>
   </div>
@@ -164,67 +166,106 @@
     function render() {
       const container = document.getElementById('curves-container');
       if (!workingConfig.curves.length) {
-        container.innerHTML = `
-          <div class="empty-state">
-            <div style="font-size:32px;margin-bottom:8px">〜</div>
-            <p>No curves defined yet. Create one to get started.</p>
-          </div>`;
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        const mark = document.createElement('div');
+        mark.style.cssText = 'font-size:32px;margin-bottom:8px';
+        mark.textContent = '〜';
+        const message = document.createElement('p');
+        message.textContent = 'No curves defined yet. Create one to get started.';
+        empty.append(mark, message);
+        container.replaceChildren(empty);
         return;
       }
 
       Object.values(charts).forEach(c => c.destroy());
       Object.keys(charts).forEach(k => delete charts[k]);
 
-      container.innerHTML = '';
+      const cards = workingConfig.curves.map((curve, ci) => createCurveCard(curve, ci));
+      container.replaceChildren(...cards);
       workingConfig.curves.forEach((curve, ci) => {
-        const div = document.createElement('div');
-        div.className = 'card curve-card';
-        div.id = 'curve-card-' + ci;
-        div.innerHTML = buildCurveHTML(curve, ci);
-        container.appendChild(div);
         renderChart(curve, ci);
       });
     }
 
-    function buildCurveHTML(curve, ci) {
-      const rows = curve.points.map((p, pi) => `
-        <tr>
-          <td><input type="number" value="${p.temp}" min="0" max="120"
-            onblur="updatePoint(${ci}, ${pi}, 'temp', this.value)" /></td>
-          <td><input type="number" value="${p.percent}" min="0" max="100"
-            onblur="updatePoint(${ci}, ${pi}, 'percent', this.value)" /></td>
-          <td>
-            <button class="btn btn-danger-ghost" style="padding:4px 8px;font-size:11px"
-              onclick="removePoint(${ci}, ${pi})">✕</button>
-          </td>
-        </tr>
-      `).join('');
+    function curveButton(text, className, action) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.textContent = text;
+      button.addEventListener('click', action);
+      return button;
+    }
 
-      return `
-        <div class="curve-header">
-          <input
-            class="curve-name-input"
-            value="${curve.name}"
-            onblur="renameCurve(${ci}, this.value)"
-            title="Click to rename"
-          />
-          <div style="display:flex;gap:8px">
-            <button class="btn btn-ghost" onclick="addPoint(${ci})">+ Point</button>
-            <button class="btn btn-danger-ghost" onclick="openDeleteModal(${ci})">Delete</button>
-          </div>
-        </div>
-        <div class="curve-body">
-          <div>
-            <table class="points-table">
-              <thead><tr><th>Temp (°C)</th><th>Fan (%)</th><th></th></tr></thead>
-              <tbody id="points-${ci}">${rows}</tbody>
-            </table>
-          </div>
-          <div>
-            <canvas id="chart-${ci}" height="180"></canvas>
-          </div>
-        </div>
-      `;
+    function createCurveCard(curve, ci) {
+      const card = document.createElement('div');
+      card.className = 'card curve-card';
+      card.id = 'curve-card-' + ci;
+      const header = document.createElement('div');
+      header.className = 'curve-header';
+      const name = document.createElement('input');
+      name.className = 'curve-name-input';
+      name.value = curve.name;
+      name.title = 'Click to rename';
+      name.addEventListener('blur', () => renameCurve(ci, name.value));
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;gap:8px';
+      actions.append(
+        curveButton('+ Point', 'btn btn-ghost', () => addPoint(ci)),
+        curveButton('Delete', 'btn btn-danger-ghost', () => openDeleteModal(ci))
+      );
+      header.append(name, actions);
+
+      const body = document.createElement('div');
+      body.className = 'curve-body';
+      const tableWrap = document.createElement('div');
+      const table = document.createElement('table');
+      table.className = 'points-table';
+      const thead = document.createElement('thead');
+      const headings = document.createElement('tr');
+      ['Temp (°C)', 'Fan (%)', ''].forEach(text => {
+        const th = document.createElement('th');
+        th.textContent = text;
+        headings.appendChild(th);
+      });
+      thead.appendChild(headings);
+      const tbody = document.createElement('tbody');
+      tbody.id = 'points-' + ci;
+      table.append(thead, tbody);
+      tableWrap.appendChild(table);
+      const chartWrap = document.createElement('div');
+      const canvas = document.createElement('canvas');
+      canvas.id = 'chart-' + ci;
+      canvas.height = 180;
+      chartWrap.appendChild(canvas);
+      body.append(tableWrap, chartWrap);
+      card.append(header, body);
+      renderPoints(tbody, ci);
+      return card;
+    }
+
+    function renderPoints(tbody, ci) {
+      const rows = workingConfig.curves[ci].points.map((point, pi) => {
+        const row = document.createElement('tr');
+        [['temp', 120], ['percent', 100]].forEach(([field, max]) => {
+          const cell = document.createElement('td');
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.value = point[field];
+          input.min = '0';
+          input.max = String(max);
+          input.addEventListener('blur', () => updatePoint(ci, pi, field, input.value));
+          cell.appendChild(input);
+          row.appendChild(cell);
+        });
+        const actions = document.createElement('td');
+        const remove = curveButton('✕', 'btn btn-danger-ghost', () => removePoint(ci, pi));
+        remove.style.cssText = 'padding:4px 8px;font-size:11px';
+        actions.appendChild(remove);
+        row.appendChild(actions);
+        return row;
+      });
+      tbody.replaceChildren(...rows);
     }
 
     function renderChart(curve, ci) {
@@ -313,18 +354,7 @@
       // Rebuild just this curve card's points table, not the full page
       const tbody = document.getElementById('points-' + ci);
       if (tbody) {
-        tbody.innerHTML = workingConfig.curves[ci].points.map((p, pi) => `
-          <tr>
-            <td><input type="number" value="${p.temp}" min="0" max="120"
-              onblur="updatePoint(${ci}, ${pi}, 'temp', this.value)" /></td>
-            <td><input type="number" value="${p.percent}" min="0" max="100"
-              onblur="updatePoint(${ci}, ${pi}, 'percent', this.value)" /></td>
-            <td>
-              <button class="btn btn-danger-ghost" style="padding:4px 8px;font-size:11px"
-                onclick="removePoint(${ci}, ${pi})">✕</button>
-            </td>
-          </tr>
-        `).join('');
+        renderPoints(tbody, ci);
         renderChart(workingConfig.curves[ci], ci);
         // Restore scroll position
         window.scrollTo(0, scrollY);
@@ -341,18 +371,7 @@
 
       const tbody = document.getElementById('points-' + ci);
       if (tbody) {
-        tbody.innerHTML = workingConfig.curves[ci].points.map((p, pi2) => `
-          <tr>
-            <td><input type="number" value="${p.temp}" min="0" max="120"
-              onblur="updatePoint(${ci}, ${pi2}, 'temp', this.value)" /></td>
-            <td><input type="number" value="${p.percent}" min="0" max="100"
-              onblur="updatePoint(${ci}, ${pi2}, 'percent', this.value)" /></td>
-            <td>
-              <button class="btn btn-danger-ghost" style="padding:4px 8px;font-size:11px"
-                onclick="removePoint(${ci}, ${pi2})">✕</button>
-            </td>
-          </tr>
-        `).join('');
+        renderPoints(tbody, ci);
         renderChart(workingConfig.curves[ci], ci);
         window.scrollTo(0, scrollY);
       } else {
@@ -370,11 +389,20 @@
       pendingDeleteIndex = ci;
 
       const body = document.getElementById('delete-modal-body');
+      body.replaceChildren();
       if (usedBy.length) {
-        body.innerHTML = `Cannot delete <strong>${curveName}</strong> — it is assigned to: <strong>${usedBy.join(', ')}</strong>.<br><br>Remove those fan assignments first.`;
+        const curve = document.createElement('strong');
+        curve.textContent = curveName;
+        const fans = document.createElement('strong');
+        fans.textContent = usedBy.join(', ');
+        body.append('Cannot delete ', curve, ' — it is assigned to: ', fans, '.');
+        body.append(document.createElement('br'), document.createElement('br'));
+        body.append('Remove those fan assignments first.');
         document.getElementById('delete-confirm-btn').style.display = 'none';
       } else {
-        body.innerHTML = `Are you sure you want to delete curve <strong>${curveName}</strong>? This cannot be undone.`;
+        const curve = document.createElement('strong');
+        curve.textContent = curveName;
+        body.append('Are you sure you want to delete curve ', curve, '? This cannot be undone.');
         document.getElementById('delete-confirm-btn').style.display = '';
       }
 
@@ -436,6 +464,13 @@
       if (isDirty) { e.preventDefault(); e.returnValue = ''; }
     });
 
+    document.getElementById('discard-btn').addEventListener('click', discardChanges);
+    document.getElementById('save-btn').addEventListener('click', saveConfig);
+    document.getElementById('new-curve-btn').addEventListener('click', openNewCurveModal);
+    document.getElementById('cancel-new-curve-btn').addEventListener('click', closeNewCurveModal);
+    document.getElementById('create-curve-btn').addEventListener('click', createCurve);
+    document.getElementById('cancel-delete-btn').addEventListener('click', closeDeleteModal);
+    document.getElementById('delete-confirm-btn').addEventListener('click', confirmDelete);
     loadConfig();
   </script>
 </body>

@@ -1,15 +1,19 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.auth_routes import router as auth_router
 from app.api.routes import router
+from app.auth import AuthMiddleware, AuthState, AuthManager
 from app.config import load_config
 from app.database import init_db
 from app.models import AppConfig
+from app.version import __version__
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _config: AppConfig | None = None
 _loop_task: asyncio.Task | None = None
+auth_manager = AuthManager()
 
 
 def get_config() -> AppConfig:
@@ -47,6 +52,13 @@ async def lifespan(app: FastAPI):
 
     from app.controller import loop
     _loop_task = asyncio.create_task(loop())
+    await asyncio.sleep(0)
+
+    # Authentication must never prevent the independently scheduled fan loop.
+    try:
+        await asyncio.to_thread(auth_manager.initialize)
+    except Exception as exc:
+        auth_manager.mark_invalid(f"Unexpected authentication initialization error: {exc}")
 
     yield
 
@@ -63,18 +75,30 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    auth_manager.close()
 
-app = FastAPI(
+
+api = FastAPI(
     title="Brisa",
     description="Docker-based fan control service",
-    version="1.0.1",
+    version=__version__,
     lifespan=lifespan,
 )
+api.state.auth = auth_manager
 
-app.include_router(router, prefix="/api")
+api.include_router(auth_router, prefix="/api/auth")
+api.include_router(router, prefix="/api")
 
 
-@app.get("/metrics", include_in_schema=False)
+@api.api_route("/login", methods=["GET", "HEAD"], include_in_schema=False)
+async def login_page():
+    if auth_manager.state is AuthState.DISABLED:
+        return RedirectResponse("/", status_code=303)
+    static_dir = Path(__file__).resolve().parent / "static"
+    return FileResponse(static_dir / "login.html")
+
+
+@api.get("/metrics", include_in_schema=False)
 async def metrics():
     from app.sensors import detect_sensors
     from app.liquidctl_wrapper import get_fan_status
@@ -119,4 +143,8 @@ async def metrics():
     return PlainTextResponse("\n".join(lines) + "\n")
 
 
-app.mount("/", StaticFiles(directory="app/static", html=True), name="static")
+api.mount("/", StaticFiles(directory="app/static", html=True), name="static")
+
+# This wrapper is deliberately outermost so docs, API routes, metrics, errors,
+# and the root StaticFiles mount share one enforcement boundary.
+app = AuthMiddleware(api, auth_manager)
