@@ -414,6 +414,7 @@ input, select, textarea { font-family: var(--font-ui); }
   position: absolute;
   top: 50%;
   right: 6px;
+  transform: translateY(-50%);
   width: 34px;
   height: 34px;
   padding: 0;
