@@ -252,6 +252,11 @@ function virtualSensorDependencyMessage(virtualSensor, fanConfigs) {
 
 /* ── Sidebar HTML (injected into each page) ─────────────── */
 const SIDEBAR_HTML = `
+<button class="mobile-nav-close" id="mobile-nav-close" type="button" aria-label="Close navigation">
+  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="m6 6 12 12M18 6 6 18"/>
+  </svg>
+</button>
 <div class="sidebar-logo">
   <div style="display:flex; align-items:center; gap:10px;">
     <img src="/logo.png" alt="Brisa" style="width:48px; height:48px; object-fit:contain; flex-shrink:0;" />
@@ -332,6 +337,52 @@ function displayVersion(version) {
   return version.startsWith('v') ? version : `v${version}`;
 }
 
+function setMobileNavigationOpen(toggle, open, documentObject = document) {
+  documentObject.body.classList.toggle('mobile-nav-open', open);
+  toggle.setAttribute('aria-expanded', String(open));
+}
+
+function initMobileNavigation() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar || document.getElementById('mobile-nav-toggle')) return;
+
+  const toggle = document.createElement('button');
+  toggle.className = 'mobile-nav-toggle';
+  toggle.id = 'mobile-nav-toggle';
+  toggle.type = 'button';
+  toggle.setAttribute('aria-label', 'Open navigation');
+  toggle.setAttribute('aria-controls', 'sidebar');
+  toggle.setAttribute('aria-expanded', 'false');
+  const icon = document.createElement('span');
+  icon.className = 'mobile-nav-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  for (let index = 0; index < 3; index += 1) {
+    icon.appendChild(document.createElement('span'));
+  }
+  toggle.appendChild(icon);
+  document.body.appendChild(toggle);
+
+  const close = document.getElementById('mobile-nav-close');
+  const closeMenu = () => {
+    setMobileNavigationOpen(toggle, false);
+    toggle.focus();
+  };
+  toggle.addEventListener('click', () => {
+    const open = toggle.getAttribute('aria-expanded') !== 'true';
+    setMobileNavigationOpen(toggle, open);
+    if (open) close?.focus();
+  });
+  close?.addEventListener('click', closeMenu);
+  sidebar.querySelectorAll('.nav-item').forEach(link => {
+    link.addEventListener('click', closeMenu);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && toggle.getAttribute('aria-expanded') === 'true') {
+      closeMenu();
+    }
+  });
+}
+
 function renderAuthChrome(state) {
   const version = document.getElementById('app-version');
   if (version) version.textContent = displayVersion(state.version);
@@ -366,6 +417,7 @@ function initPage() {
   const sidebar = document.getElementById('sidebar');
   if (sidebar) sidebar.innerHTML = SIDEBAR_HTML;
 
+  initMobileNavigation();
   initTheme();
   document.getElementById('theme-toggle')?.addEventListener('click', toggleTheme);
   setActiveNav();
@@ -381,6 +433,7 @@ if (typeof module !== 'undefined' && module.exports) {
     normalizeAuthState,
     apiRequestOptions,
     displayVersion,
+    setMobileNavigationOpen,
   };
 }
 

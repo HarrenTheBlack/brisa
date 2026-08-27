@@ -6,7 +6,9 @@ const vm = require('node:vm');
 
 const STATIC_ROOT = path.join(__dirname, '..', 'brisa', 'app', 'static');
 const APP_SOURCE = fs.readFileSync(path.join(STATIC_ROOT, 'app.js'), 'utf8');
+const LOGIN_HTML = fs.readFileSync(path.join(STATIC_ROOT, 'login.html'), 'utf8');
 const LOGIN_SOURCE = fs.readFileSync(path.join(STATIC_ROOT, 'login.js'), 'utf8');
+const STYLE_SOURCE = fs.readFileSync(path.join(STATIC_ROOT, 'style.css'), 'utf8');
 const STATIC_SOURCES = fs.readdirSync(STATIC_ROOT)
   .filter(name => name.endsWith('.html') || name.endsWith('.js'))
   .map(name => fs.readFileSync(path.join(STATIC_ROOT, name), 'utf8'))
@@ -16,8 +18,12 @@ const {
   apiRequestOptions,
   displayVersion,
   normalizeAuthState,
+  setMobileNavigationOpen,
 } = require('../brisa/app/static/app.js');
-const { loginRequestOptions } = require('../brisa/app/static/login.js');
+const {
+  loginRequestOptions,
+  togglePasswordVisibility,
+} = require('../brisa/app/static/login.js');
 
 
 function loadAppInternals() {
@@ -56,6 +62,97 @@ test('login sends credentials only in a same-origin JSON request body', () => {
   assert.deepEqual(JSON.parse(options.body), { username, password });
   assert.match(LOGIN_SOURCE, /fetch\(\s*['"]\/api\/auth\/login['"]/);
   assert.doesNotMatch(LOGIN_SOURCE, /URLSearchParams|[?&](?:username|password)=|encodeURIComponent\((?:username|password)/);
+});
+
+
+test('password visibility toggle preserves the password without submitting the form', () => {
+  const attributes = new Map([
+    ['aria-label', 'Show password'],
+    ['aria-pressed', 'false'],
+  ]);
+  const visibleClasses = new Set();
+  const password = { type: 'password', value: 'still-secret' };
+  const toggle = {
+    classList: {
+      toggle(name, enabled) {
+        if (enabled) visibleClasses.add(name);
+        else visibleClasses.delete(name);
+      },
+    },
+    setAttribute(name, value) { attributes.set(name, value); },
+  };
+  assert.match(LOGIN_HTML, /<input[^>]+id="password"[^>]+type="password"/);
+  assert.match(
+    LOGIN_HTML,
+    /<button[^>]+id="password-toggle"[^>]+type="button"[^>]+aria-label="Show password"[^>]+aria-pressed="false"/
+  );
+  assert.doesNotMatch(LOGIN_SOURCE, /requestSubmit|\.submit\s*\(/);
+
+  assert.equal(togglePasswordVisibility(password, toggle), true);
+  assert.equal(password.type, 'text');
+  assert.equal(password.value, 'still-secret');
+  assert.equal(attributes.get('aria-label'), 'Hide password');
+  assert.equal(attributes.get('aria-pressed'), 'true');
+  assert.ok(visibleClasses.has('is-visible'));
+
+  assert.equal(togglePasswordVisibility(password, toggle), false);
+  assert.equal(password.type, 'password');
+  assert.equal(password.value, 'still-secret');
+  assert.equal(attributes.get('aria-label'), 'Show password');
+  assert.equal(attributes.get('aria-pressed'), 'false');
+  assert.ok(!visibleClasses.has('is-visible'));
+});
+
+
+test('mobile menu uses the shared sidebar and maintains accessible open state', () => {
+  const bodyClasses = new Set();
+  const documentObject = {
+    body: {
+      classList: {
+        toggle(name, enabled) {
+          if (enabled) bodyClasses.add(name);
+          else bodyClasses.delete(name);
+        },
+      },
+    },
+  };
+  const attributes = new Map([['aria-expanded', 'false']]);
+  const toggle = {
+    setAttribute(name, value) { attributes.set(name, value); },
+  };
+
+  assert.match(APP_SOURCE, /id = 'mobile-nav-toggle'/);
+  assert.match(APP_SOURCE, /aria-controls', 'sidebar'/);
+  assert.match(APP_SOURCE, /aria-expanded', 'false'/);
+  assert.match(APP_SOURCE, /id="mobile-nav-close"/);
+  assert.match(APP_SOURCE, /sidebar\.querySelectorAll\('\.nav-item'\)/);
+  assert.match(APP_SOURCE, /event\.key === 'Escape'/);
+  assert.match(APP_SOURCE, /mobile-nav-open/);
+  assert.match(APP_SOURCE, /data-logout>Log out<\/button>/);
+  assert.match(STYLE_SOURCE, /body\.mobile-nav-open \.mobile-auth \{ display: none; \}/);
+  assert.match(STYLE_SOURCE, /body\.mobile-nav-open \{\s*overflow: hidden;/);
+  assert.match(STYLE_SOURCE, /body\.mobile-nav-open \.sidebar \{[\s\S]*overflow-y: auto;/);
+
+  for (const [label, href] of [
+    ['Dashboard', '/'],
+    ['Sensors & Fans', '/devices.html'],
+    ['Curves', '/curves.html'],
+    ['Fan Config', '/fanconfig.html'],
+    ['History', '/history.html'],
+    ['Settings', '/settings.html'],
+  ]) {
+    assert.match(APP_SOURCE, new RegExp(`href="${href.replace('.', '\\.')}"`));
+    assert.match(APP_SOURCE, new RegExp(`>\\s*${label.replace('&', '&')}\\s*<`));
+    assert.equal((APP_SOURCE.match(new RegExp(`href="${href.replace('.', '\\.')}"`, 'g')) || []).length, 1);
+  }
+
+  setMobileNavigationOpen(toggle, true, documentObject);
+  assert.ok(bodyClasses.has('mobile-nav-open'));
+  assert.equal(attributes.get('aria-expanded'), 'true');
+
+  setMobileNavigationOpen(toggle, false, documentObject);
+  assert.ok(!bodyClasses.has('mobile-nav-open'));
+  assert.equal(attributes.get('aria-expanded'), 'false');
 });
 
 
