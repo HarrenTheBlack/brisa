@@ -87,6 +87,10 @@ test('password visibility toggle preserves the password without submitting the f
     /<button[^>]+id="password-toggle"[^>]+type="button"[^>]+aria-label="Show password"[^>]+aria-pressed="false"/
   );
   assert.doesNotMatch(LOGIN_SOURCE, /requestSubmit|\.submit\s*\(/);
+  assert.match(
+    STYLE_SOURCE,
+    /\.password-toggle \{[\s\S]*top: 50%;[\s\S]*transform: translateY\(-50%\);/
+  );
 
   assert.equal(togglePasswordVisibility(password, toggle), true);
   assert.equal(password.type, 'text');
