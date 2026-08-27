@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.1 - 2026-08-27
+
+### Changed
+
+- Batched sensor and fan history writes from each controller cycle in a single SQLite transaction and limited retention pruning to hourly.
+
 ## v1.2.0 - 2026-08-27
 
 ### Added

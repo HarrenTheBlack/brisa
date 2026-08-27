@@ -1,6 +1,6 @@
 # Fan Control Service — Architecture Document
 
-**Status:** v1.2.0
+**Status:** v1.2.1
 **Last Updated:** August 27, 2026
 
 ---
@@ -551,7 +551,7 @@ brisa/
 ```yaml
 services:
   brisa:
-    image: ghcr.io/harrentheblack/brisa:1.2.0
+    image: ghcr.io/harrentheblack/brisa:1.2.1
     container_name: brisa
     restart: unless-stopped
     privileged: true
@@ -610,7 +610,7 @@ sudo podman run --privileged \
   -e BRISA_SECURE_COOKIES=true \
   -e BRISA_SESSION_TTL_SECONDS=28800 \
   -e BRISA_TRUST_PROXY=false \
-  ghcr.io/harrentheblack/brisa:1.2.0
+  ghcr.io/harrentheblack/brisa:1.2.1
 ```
 
 The `-v /sys:/sys` bind mount may be needed with Podman even in rootful mode, as Podman's default sysfs mount can be read-only. Docker does not require this — its `--privileged` flag grants full sysfs access by default.

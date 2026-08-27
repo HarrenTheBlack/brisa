@@ -575,7 +575,7 @@ def test_login_me_logout_flow(app_factory):
         assert payload["authenticated"] is True
         assert payload["username"] == "admin"
         assert re.fullmatch(r"[A-Za-z0-9_-]{43}", payload["csrf_token"])
-        assert payload["version"] == __version__ == "1.2.0"
+        assert payload["version"] == __version__ == "1.2.1"
 
         logged_out = client.post(
             "/api/auth/logout", headers={"X-CSRF-Token": payload["csrf_token"]}
@@ -1168,7 +1168,7 @@ def test_main_lifespan_keeps_controller_task_running_and_auth_is_state_isolated(
     hwmon_pwm = importlib.import_module("app.hwmon_pwm")
 
     manager = AuthManager()
-    assert main.api.version == __version__ == "1.2.0"
+    assert main.api.version == __version__ == "1.2.1"
     monkeypatch.setattr(main, "auth_manager", manager)
     monkeypatch.setattr(main.api.state, "auth", manager)
     monkeypatch.setattr(main, "_config", None)
