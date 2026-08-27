@@ -208,15 +208,61 @@ def test_all_missing_virtual_sources_use_fan_safety_floor(monkeypatch, drive_cas
         lambda fan_id, backend, percent: applied.append((fan_id, backend, percent)),
     )
     monkeypatch.setattr(controller, "_get_rpm_map", lambda _config: {})
-    monkeypatch.setattr(controller, "write_reading", lambda *_args: None)
-    monkeypatch.setattr(controller, "write_fan_reading", lambda *_args: None)
+    history_writes = []
+    monkeypatch.setattr(
+        controller, "write_cycle_readings", lambda *args: history_writes.append(args)
+    )
     monkeypatch.setattr(controller, "prune_old_rows", lambda *_args: None)
+    monkeypatch.setattr(controller, "_next_history_prune_at", None)
 
     asyncio.run(controller.run_once(config))
 
     assert applied == [
         (drive_cases["fan_id"], "hwmon-pwm", config.settings.safety_floor_percent)
     ]
+    assert len(history_writes) == 1
+    _, sensor_readings, fan_readings = history_writes[0]
+    assert sensor_readings == {}
+    assert fan_readings == [(drive_cases["fan_id"], config.settings.safety_floor_percent, None)]
+
+
+@pytest.mark.regression
+def test_history_pruning_runs_once_per_hour(monkeypatch):
+    pruned = []
+    monotonic_values = iter([100.0, 101.0, 3700.0])
+    monkeypatch.setattr(controller.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(controller, "prune_old_rows", pruned.append)
+    monkeypatch.setattr(controller, "_next_history_prune_at", None)
+
+    controller._prune_history_if_due(30)
+    controller._prune_history_if_due(30)
+    controller._prune_history_if_due(30)
+
+    assert pruned == [30, 30]
+
+
+@pytest.mark.regression
+def test_history_pruning_retries_after_failure(monkeypatch):
+    attempts = []
+
+    def prune(history_days):
+        attempts.append(history_days)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary database failure")
+
+    monotonic_values = iter([100.0, 101.0])
+    monkeypatch.setattr(controller.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(controller, "prune_old_rows", prune)
+    monkeypatch.setattr(controller, "_next_history_prune_at", None)
+
+    with pytest.raises(RuntimeError, match="temporary database failure"):
+        controller._prune_history_if_due(30)
+    assert controller._next_history_prune_at is None
+
+    controller._prune_history_if_due(30)
+
+    assert attempts == [30, 30]
+    assert controller._next_history_prune_at == 3701.0
 
 
 @pytest.mark.regression

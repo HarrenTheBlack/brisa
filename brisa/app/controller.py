@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 
-from app.database import write_reading, write_fan_reading, prune_old_rows
+from app.database import prune_old_rows, write_cycle_readings
 from app.sensors import detect_sensors
 from app.liquidctl_wrapper import set_fan_speed as liquidctl_set_speed, get_fan_status
 from app import hwmon_pwm
@@ -14,6 +14,9 @@ _last_applied: dict[str, int] = {}
 
 # Track which hwmon-pwm fans have been taken over in this session
 _pwm_taken_over: set[str] = set()
+
+HISTORY_PRUNE_INTERVAL_SECONDS = 3600
+_next_history_prune_at: float | None = None
 
 
 def interpolate(points: list[dict], temp: float) -> int:
@@ -129,6 +132,17 @@ def _get_rpm_map(config) -> dict[str, float]:
     return rpm_map
 
 
+def _prune_history_if_due(history_days: int) -> None:
+    global _next_history_prune_at
+
+    now = time.monotonic()
+    if _next_history_prune_at is not None and now < _next_history_prune_at:
+        return
+
+    prune_old_rows(history_days)
+    _next_history_prune_at = now + HISTORY_PRUNE_INTERVAL_SECONDS
+
+
 async def run_once(config) -> None:
     ts = int(time.time())
     curve_map = {c.name: c for c in config.curves}
@@ -175,14 +189,12 @@ async def run_once(config) -> None:
 
     rpm_map = _get_rpm_map(config)
 
-    for sensor_id, temp in sensor_temps.items():
-        write_reading(ts, sensor_id, temp)
-
-    for fr in fan_results:
-        rpm = rpm_map.get(fr["fan_id"])
-        write_fan_reading(ts, fr["fan_id"], fr["percent"], rpm)
-
-    prune_old_rows(config.settings.history_days)
+    history_fan_readings = [
+        (fr["fan_id"], fr["percent"], rpm_map.get(fr["fan_id"]))
+        for fr in fan_results
+    ]
+    write_cycle_readings(ts, sensor_temps, history_fan_readings)
+    _prune_history_if_due(config.settings.history_days)
 
 
 async def loop() -> None:
