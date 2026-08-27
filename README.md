@@ -2,7 +2,7 @@
   <img src="brisa/app/static/logo_text.png" width="250">
 </p>
 
-*v1.1.0*
+*v1.2.0*
 
 Brisa is a self-contained Docker service for controlling fans on TrueNAS SCALE (and any other Linux host where you can run Docker but can't install packages directly).
 
@@ -73,10 +73,10 @@ Either backend works independently — you don't need a USB controller to use hw
 Brisa publishes a Docker image to GitHub Container Registry:
 
 ```text
-ghcr.io/harrentheblack/brisa:1.1.0
+ghcr.io/harrentheblack/brisa:1.2.0
 ```
 
-Brisa `v1.1.0` includes the reviewed authentication and security hardening. Use the immutable `ghcr.io/harrentheblack/brisa:1.1.0` image tag for production deployments rather than `latest`. Authentication remains optional for trusted LAN/backwards-compatible deployments, but public exposure requires authentication and network controls. `v1.0.2` remains the stable-drive-ID release.
+Brisa `v1.2.0` includes mobile navigation and password visibility improvements while retaining the reviewed authentication and security hardening. Use the immutable `ghcr.io/harrentheblack/brisa:1.2.0` image tag for production deployments rather than `latest`. Authentication remains optional for trusted LAN/backwards-compatible deployments, but public exposure requires authentication and network controls. `v1.0.2` remains the stable-drive-ID release.
 
 Generate an Argon2id password hash. `getpass` reads the password from the terminal, and only the encoded hash is written to disk; the plaintext password is never placed in Compose, shell history, or the secret file.
 
@@ -104,7 +104,7 @@ Create a `docker-compose.yml` file. This example is for final HTTPS deployment a
 ```yaml
 services:
   brisa:
-    image: ghcr.io/harrentheblack/brisa:1.1.0
+    image: ghcr.io/harrentheblack/brisa:1.2.0
     container_name: brisa
     restart: unless-stopped
     privileged: true
@@ -234,7 +234,7 @@ sudo podman run --privileged \
   -e BRISA_SECURE_COOKIES=true \
   -e BRISA_SESSION_TTL_SECONDS=28800 \
   -e BRISA_TRUST_PROXY=false \
-  ghcr.io/harrentheblack/brisa:1.1.0
+  ghcr.io/harrentheblack/brisa:1.2.0
 ```
 
 This Podman command is for HTTPS deployment. For temporary direct HTTP testing on a trusted LAN only, set `BRISA_SECURE_COOKIES=false`. Put the generated `password_hash` under `/path/to/secrets`; it contains only the encoded hash and is mounted read-only.

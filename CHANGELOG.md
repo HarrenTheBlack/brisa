@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.2.0 - 2026-08-27
+
+### Added
+
+- Added a show/hide password control to the login form with accessible state and keyboard/touch support.
+- Added responsive mobile navigation using the existing shared sidebar, making all management pages accessible on narrow/mobile displays.
+
+### Changed
+
+- Improved mobile navigation behavior with an overlay drawer, independent drawer scrolling, background scroll suppression, Escape/close handling, and focus restoration.
+- Improved mobile authentication chrome so the redundant mobile logout presentation is suppressed while the navigation drawer is open.
+
+### Fixed
+
+- Fixed the password visibility button alignment so the control is vertically centered within the password field.
+
 ## v1.1.0 - 2026-08-25
 
 ### Added
