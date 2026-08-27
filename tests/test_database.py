@@ -6,6 +6,56 @@ from app import database
 
 
 @pytest.mark.regression
+def test_cycle_history_write_persists_sensor_and_fan_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "history.db"
+    monkeypatch.setattr(database, "DB_PATH", db_path)
+    database.init_db()
+
+    database.write_cycle_readings(
+        100,
+        {"sensor-a": 42.5, "sensor-b": 37.0},
+        [("fan-a", 50, 1200.0), ("fan-b", 30, None)],
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        sensor_rows = conn.execute(
+            "SELECT ts, sensor_id, temp FROM readings ORDER BY sensor_id"
+        ).fetchall()
+        fan_rows = conn.execute(
+            "SELECT ts, fan_id, percent, rpm FROM fan_readings ORDER BY fan_id"
+        ).fetchall()
+
+    assert sensor_rows == [(100, "sensor-a", 42.5), (100, "sensor-b", 37.0)]
+    assert fan_rows == [(100, "fan-a", 50, 1200.0), (100, "fan-b", 30, None)]
+
+
+@pytest.mark.regression
+def test_cycle_history_write_rolls_back_when_fan_insert_fails(tmp_path, monkeypatch):
+    db_path = tmp_path / "history.db"
+    monkeypatch.setattr(database, "DB_PATH", db_path)
+    database.init_db()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER abort_cycle_fan_insert
+            BEFORE INSERT ON fan_readings
+            BEGIN
+                SELECT RAISE(ABORT, 'test rollback');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="test rollback"):
+        database.write_cycle_readings(
+            100, {"sensor-a": 42.5}, [("fan-a", 50, 1200.0)]
+        )
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM readings").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM fan_readings").fetchone()[0] == 0
+
+
+@pytest.mark.regression
 def test_history_migration_is_transactional_and_idempotent(
     tmp_path, monkeypatch, drive_cases
 ):

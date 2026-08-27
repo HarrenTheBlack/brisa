@@ -83,19 +83,20 @@ def migrate_reading_sensor_ids() -> int:
     return migrated_rows
 
 
-def write_reading(ts: int, sensor_id: str, temp: float) -> None:
+def write_cycle_readings(
+    ts: int,
+    sensor_readings: dict[str, float],
+    fan_readings: list[tuple[str, int, float | None]],
+) -> None:
+    """Persist all history rows from one controller cycle atomically."""
     with _connect() as conn:
-        conn.execute(
+        conn.executemany(
             "INSERT INTO readings (ts, sensor_id, temp) VALUES (?, ?, ?)",
-            (ts, sensor_id, temp),
+            ((ts, sensor_id, temp) for sensor_id, temp in sensor_readings.items()),
         )
-
-
-def write_fan_reading(ts: int, fan_id: str, percent: int, rpm: float | None) -> None:
-    with _connect() as conn:
-        conn.execute(
+        conn.executemany(
             "INSERT INTO fan_readings (ts, fan_id, percent, rpm) VALUES (?, ?, ?, ?)",
-            (ts, fan_id, percent, rpm),
+            ((ts, fan_id, percent, rpm) for fan_id, percent, rpm in fan_readings),
         )
 
 
