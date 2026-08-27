@@ -289,11 +289,6 @@ docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{
 
 Identify the shared network and either assign NPM a stable address and trust that exact IPv4 `/32` (or IPv6 `/128`), or trust the smallest explicit shared-network CIDR after reviewing what other containers can join it. For example, a measured peer of `172.30.0.10` is configured as `BRISA_TRUSTED_PROXY_CIDRS=172.30.0.10/32`; this address is only an illustration, not a universal NPM value.
 
-### Post-NPM follow-up
-
-- [ ] **TrueNAS Application Info version:** after authentication and Nginx Proxy Manager deployment are complete, determine where TrueNAS Custom Apps obtains the version shown in Application Info (custom-app metadata, Compose metadata, Docker labels, image metadata, an `app_version` field, or another TrueNAS-specific source). Make it match the actual Brisa release without introducing a second manually maintained version when it can be derived from the release version.
-- [ ] **History storage architecture:** after authentication and Nginx Proxy Manager deployment are complete, review the actual `history.db` workload before changing databases. Evaluate the schema and indexes, write frequency and reading volume, expected growth, `history_days` retention and pruning performance, query patterns, concurrency and transaction behavior, integrity/corruption recovery, backup/restore, SQLite WAL mode, batching and one-transaction-per-reading overhead, indexes, aggregation/downsampling, long-term retention, and migration strategy. Compare keeping SQLite largely as-is, optimizing SQLite, SQLite WAL plus batching/index improvements, PostgreSQL, PostgreSQL plus TimescaleDB, and another time-series approach only if justified. Do not assume PostgreSQL is better: Brisa is a small self-contained appliance-like service, and another database container must be justified by measured workload and operational value.
-
 ### Release-time version checklist
 
 For future releases, update the release version deliberately. Do not blindly replace historical `1.0.x` references.
