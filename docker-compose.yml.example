@@ -1,6 +1,6 @@
 services:
   brisa:
-    image: ghcr.io/harrentheblack/brisa:1.1.0
+    image: ghcr.io/harrentheblack/brisa:1.2.0
     container_name: brisa
     restart: unless-stopped
     privileged: true
