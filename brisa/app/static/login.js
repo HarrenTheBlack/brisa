@@ -18,6 +18,15 @@ function setLoginBusy(form, button, busy) {
   button.textContent = busy ? 'Signing in…' : 'Sign in';
 }
 
+function togglePasswordVisibility(password, toggle) {
+  const visible = password.type === 'password';
+  password.type = visible ? 'text' : 'password';
+  toggle.setAttribute('aria-label', visible ? 'Hide password' : 'Show password');
+  toggle.setAttribute('aria-pressed', String(visible));
+  toggle.classList.toggle('is-visible', visible);
+  return visible;
+}
+
 async function redirectIfAlreadyAuthenticated(fetchImpl, locationObject) {
   try {
     const response = await fetchImpl('/api/auth/me', {
@@ -44,10 +53,14 @@ function initLogin() {
   const form = document.getElementById('login-form');
   const username = document.getElementById('username');
   const password = document.getElementById('password');
+  const passwordToggle = document.getElementById('password-toggle');
   const button = document.getElementById('login-submit');
   const error = document.getElementById('login-error');
 
   redirectIfAlreadyAuthenticated(window.fetch.bind(window), window.location);
+  passwordToggle?.addEventListener('click', () => {
+    togglePasswordVisibility(password, passwordToggle);
+  });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (!username.value || !password.value) {
@@ -85,7 +98,7 @@ function initLogin() {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { loginRequestOptions };
+  module.exports = { loginRequestOptions, togglePasswordVisibility };
 }
 
 if (typeof document !== 'undefined') {
